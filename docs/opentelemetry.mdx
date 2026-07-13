@@ -40,6 +40,8 @@ It subscribes to every `agora:<lib>:<event>` base channel and its five span sub-
 
 POINT events (`emit`) are added to the **active** span as span events named `agora.<lib>.<event>` with the same attribute shape. (Disable this with `recordPointEvents: false`.)
 
+Events a lib-specific consumer has [claimed](/docs/diagnostics/claims) are **skipped** by default — the claiming lib already records its own typed observation, so bridging them again would duplicate every such event. Override with `recordClaimed: true`.
+
 <Callout type="info" title="Zero-overhead without an SDK">
 Every `@opentelemetry/api` call resolves to a no-op span/tracer when no SDK is registered, so the bridge still subscribes but produces nothing. The tracer is resolved lazily on each `start`, so a late-registered SDK wins.
 </Callout>
@@ -53,6 +55,7 @@ If you start the bridge manually (see below), `start(opts)` / `new DiagnosticsOt
 | `tracerName` | `string` | `@adonis-agora/diagnostics` | Name passed to `trace.getTracer(...)`. |
 | `recordPointEvents` | `boolean` | `true` | Record POINT `emit`s as events on the active span. |
 | `maxOpenSpans` | `number` | `10000` | Cap on open (un-ended) spans; the oldest is force-ended when exceeded. |
+| `recordClaimed` | `boolean` | `false` | Bridge events whose `lib:event` is [claimed](/docs/diagnostics/claims) by a lib-specific consumer. Default skips them so they aren't recorded twice; `true` bridges everything. |
 
 The open-span cap is a safety valve: if a `trace()` span never observes an `end`/`error` (e.g. a process killed mid-operation), the oldest span is force-ended with an `ERROR` status rather than leaking memory.
 

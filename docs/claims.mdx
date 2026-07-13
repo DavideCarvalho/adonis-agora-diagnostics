@@ -1,0 +1,89 @@
+---
+title: Claim registry
+description: How a lib-specific watcher claims a diagnostics channel so the generic OTel bridge dedups — recording each event once, not twice.
+icon: Flag
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Some libraries observe their **own** events with a first-class, typed shape — a lib-specific OTel span for `agora:agent:*`, or a Telescope-style watcher for `agora:media:*`. But the generic [OTel bridge](/docs/diagnostics/opentelemetry) auto-subscribes to **every** registered channel. Left alone, every event such a library emits would be handled **twice**: once as its own typed observation, once as a generic one.
+
+The **claim registry** is how a library says *"I already handle this — skip it by default."* It's a process-wide record of which `lib:event` pairs have a dedicated consumer, and the generic bridge consults it to dedup.
+
+## `claimDiagnostics` — stake a claim
+
+Call `claimDiagnostics(lib, events)` once when your typed consumer starts, passing every event it handles first-class. It returns a **release** function that un-claims exactly those keys:
+
+```ts title="Inside a lib's own watcher"
+import { claimDiagnostics } from '@adonis-agora/diagnostics'
+
+// The media watcher records agora:media:upload.complete as its own typed span,
+// so tell the generic bridge to skip it:
+const release = claimDiagnostics('media', ['upload.complete'])
+
+// … later, on consumer teardown:
+release()
+```
+
+While `media:upload.complete` is claimed, the generic bridge no longer produces a duplicate OTel span/event for it — the media watcher's typed observation is the only one.
+
+<Callout type="info" title="Both functions live on the root entry">
+`claimDiagnostics` and `isDiagnosticClaimed` are exported from `@adonis-agora/diagnostics` (not the `/otel` subpath). Claiming is a producer-side concern — the bridge only *reads* the registry.
+</Callout>
+
+## `isDiagnosticClaimed` — the bridge's dedup check
+
+A generic observer asks `isDiagnosticClaimed(lib, event)` at **record time** — when an event is actually published — and skips events that are claimed:
+
+```ts
+import { isDiagnosticClaimed } from '@adonis-agora/diagnostics'
+
+if (isDiagnosticClaimed('media', 'upload.complete')) {
+  // a lib-specific consumer already handles this — don't double-record
+}
+```
+
+Checking at record time (rather than once at subscribe time) is what makes claiming **order-independent**: a lib may call `claimDiagnostics` before or after the bridge's `start()`, and every event handled after the claim exists is skipped either way. It also means a released claim immediately un-skips.
+
+## Reference counting
+
+Claims are reference-counted, so two independent consumers can claim the same key without one's release un-claiming it for the other:
+
+- Claiming an already-claimed key **increments** its count.
+- The `release()` function **decrements** only the keys *that call* added, deleting a key only once its count reaches `0`.
+- `release()` is **idempotent** — calling it more than once has no additional effect.
+
+```ts
+const releaseA = claimDiagnostics('media', ['upload.complete'])
+const releaseB = claimDiagnostics('media', ['upload.complete'])
+
+releaseA()
+isDiagnosticClaimed('media', 'upload.complete') // → true (B still holds it)
+
+releaseB()
+isDiagnosticClaimed('media', 'upload.complete') // → false
+```
+
+## Overriding the dedup: `recordClaimed`
+
+The generic bridge skips claimed keys **by default**. Set `recordClaimed: true` in its `BridgeOptions` to bridge everything regardless of claims — useful to see the raw generic feed alongside the typed one while debugging:
+
+```ts
+import { start } from '@adonis-agora/diagnostics/otel'
+
+// Bridge every event, even ones a lib-specific consumer claims:
+start({ recordClaimed: true })
+```
+
+With `recordClaimed: true`, a claimed event produces **both** the lib's typed observation and the generic OTel span/event. See the full [bridge options](/docs/diagnostics/opentelemetry#bridge-options).
+
+## The raw convention (no dependency required)
+
+A package that doesn't want to depend on `@adonis-agora/diagnostics` can still participate by replicating the registry structure exactly — the same technique the channel registry uses:
+
+- `Symbol.for('@agora/diagnostics:claims')` resolves to a `Map<string, number>` stored on `globalThis`.
+- Each key is `` `${lib}:${event}` `` — the same `lib:event` label the relay and bridge parse channel names into.
+- The value is a reference count, always `>= 1` while the key is claimed by at least one caller; the key is deleted (unclaimed) only once the count reaches `0`.
+- A key is *claimed* iff the map has it; *unclaimed* iff absent.
+
+Because the map lives on a cross-copy-stable global slot, claims made through any physical copy of the package — or by a package replicating the raw structure — are all shared.

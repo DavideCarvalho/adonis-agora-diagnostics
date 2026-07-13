@@ -9,6 +9,7 @@
     "consumers",
     "transports",
     "---Integrations---",
-    "opentelemetry"
+    "opentelemetry",
+    "claims"
   ]
 }

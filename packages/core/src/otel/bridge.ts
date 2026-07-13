@@ -8,6 +8,7 @@ import {
   context,
   trace,
 } from '@opentelemetry/api';
+import { isDiagnosticClaimed } from '../claims.js';
 import { onChannelRegistered, registeredChannels } from '../registry.js';
 import { parseChannelName } from '../relay.js';
 import { traceChannelNames } from '../trace.js';
@@ -22,6 +23,16 @@ export interface BridgeOptions {
   recordPointEvents?: boolean;
   /** Cap on open (un-ended) spans before the oldest is force-ended. Default `10000`. */
   maxOpenSpans?: number;
+  /**
+   * Bridge events whose `lib:event` key is CLAIMED by a lib-specific consumer
+   * via {@link claimDiagnostics}. Default `false`: claimed keys are skipped here
+   * because the claiming lib already produces its own typed observation for
+   * them, and bridging them again would duplicate every such event (once typed,
+   * once as a generic OTel span/event). Set `true` to bridge everything
+   * regardless of claims, e.g. to see the raw feed alongside the typed one while
+   * debugging.
+   */
+  recordClaimed?: boolean;
 }
 
 const DEFAULT_TRACER_NAME = '@adonis-agora/diagnostics';
@@ -76,6 +87,7 @@ export class DiagnosticsOtelBridge {
   readonly #tracerName: string;
   readonly #recordPointEvents: boolean;
   readonly #maxOpenSpans: number;
+  readonly #recordClaimed: boolean;
 
   /** Lazily-resolved tracer — re-read each `start` so a late-registered SDK wins. */
   #tracer: Tracer | null = null;
@@ -91,6 +103,7 @@ export class DiagnosticsOtelBridge {
     this.#tracerName = opts.tracerName ?? DEFAULT_TRACER_NAME;
     this.#recordPointEvents = opts.recordPointEvents ?? true;
     this.#maxOpenSpans = opts.maxOpenSpans ?? DEFAULT_MAX_OPEN_SPANS;
+    this.#recordClaimed = opts.recordClaimed ?? false;
   }
 
   /** Number of currently-open (un-ended) spans. Exposed for tests/introspection. */
@@ -164,6 +177,9 @@ export class DiagnosticsOtelBridge {
   /** Handle a POINT event: add it to the active span as an event, best-effort. */
   #onPoint(event: DiagnosticEvent): void {
     if (!this.#recordPointEvents) return;
+    // Checked at RECORD time (not subscribe time) so claiming stays
+    // order-independent — see the contract documented on isDiagnosticClaimed.
+    if (!this.#recordClaimed && isDiagnosticClaimed(event.lib, event.event)) return;
     try {
       const active = trace.getActiveSpan();
       if (active === undefined) return;
@@ -180,6 +196,9 @@ export class DiagnosticsOtelBridge {
 
   /** Handle one span phase event, mutating the per-spanId OTel span. */
   #onSpan(event: SpanEvent): void {
+    // Same claim gating as point traffic, keyed by the same `lib:event` pair
+    // (phase-independent) and checked at record time for order-independence.
+    if (!this.#recordClaimed && isDiagnosticClaimed(event.lib, event.event)) return;
     try {
       switch (event.phase) {
         case 'start':

@@ -14,6 +14,7 @@ export {
   getChannel,
   SCHEMA_VERSION,
 } from './channel.js';
+export { claimDiagnostics, isDiagnosticClaimed } from './claims.js';
 export { assertCapabilityNaming } from './conformance.js';
 export {
   type DiagnosticsConfig,

@@ -7,7 +7,7 @@ import {
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { emit, resetRegistry, trace } from '../src/index.js';
+import { claimDiagnostics, emit, resetRegistry, trace } from '../src/index.js';
 import { DiagnosticsOtelBridge } from '../src/otel/bridge.js';
 
 const exporter = new InMemorySpanExporter();
@@ -184,6 +184,121 @@ describe('DiagnosticsOtelBridge — defensive behavior', () => {
       for (const r of releases) r(null);
     } finally {
       bridge.stop();
+    }
+  });
+});
+
+describe('DiagnosticsOtelBridge — claim registry dedup', () => {
+  it('skips a claimed lib:event POINT by default (a lib-specific consumer already handles it)', () => {
+    const release = claimDiagnostics('agent', ['chat-request']);
+    const bridge = new DiagnosticsOtelBridge();
+    bridge.start();
+    try {
+      const parent = otelTrace.getTracer('test').startSpan('request');
+      context.with(otelTrace.setSpan(context.active(), parent), () => {
+        emit('agent', 'chat-request', { model: 'gpt-4o' });
+      });
+      parent.end();
+
+      const span = spanByName('request');
+      expect(span?.events.some((e) => e.name === 'agora.agent.chat-request')).toBe(false);
+    } finally {
+      bridge.stop();
+      release();
+    }
+  });
+
+  it('bridges a claimed lib:event POINT when recordClaimed: true is set', () => {
+    const release = claimDiagnostics('agent', ['chat-request']);
+    const bridge = new DiagnosticsOtelBridge({ recordClaimed: true });
+    bridge.start();
+    try {
+      const parent = otelTrace.getTracer('test').startSpan('request');
+      context.with(otelTrace.setSpan(context.active(), parent), () => {
+        emit('agent', 'chat-request', { model: 'gpt-4o' });
+      });
+      parent.end();
+
+      const span = spanByName('request');
+      expect(span?.events.some((e) => e.name === 'agora.agent.chat-request')).toBe(true);
+    } finally {
+      bridge.stop();
+      release();
+    }
+  });
+
+  it('leaves unclaimed sibling POINT events unaffected', () => {
+    const release = claimDiagnostics('agent', ['chat-request']);
+    const bridge = new DiagnosticsOtelBridge();
+    bridge.start();
+    try {
+      const parent = otelTrace.getTracer('test').startSpan('request');
+      context.with(otelTrace.setSpan(context.active(), parent), () => {
+        // Sibling event on the same lib, never claimed.
+        emit('agent', 'tool-call', { tool: 'search' });
+      });
+      parent.end();
+
+      const span = spanByName('request');
+      expect(span?.events.some((e) => e.name === 'agora.agent.tool-call')).toBe(true);
+    } finally {
+      bridge.stop();
+      release();
+    }
+  });
+
+  it('un-claiming (release) makes the bridge record the POINT event again', () => {
+    const release = claimDiagnostics('agent', ['chat-request']);
+    const bridge = new DiagnosticsOtelBridge();
+    bridge.start();
+    try {
+      const claimedParent = otelTrace.getTracer('test').startSpan('request-claimed');
+      context.with(otelTrace.setSpan(context.active(), claimedParent), () => {
+        emit('agent', 'chat-request', { model: 'gpt-4o' }); // claimed → skipped
+      });
+      claimedParent.end();
+
+      release();
+
+      const openParent = otelTrace.getTracer('test').startSpan('request-open');
+      context.with(otelTrace.setSpan(context.active(), openParent), () => {
+        emit('agent', 'chat-request', { model: 'gpt-4o' }); // unclaimed → recorded
+      });
+      openParent.end();
+
+      const claimedSpan = spanByName('request-claimed');
+      const openSpan = spanByName('request-open');
+      expect(claimedSpan?.events.some((e) => e.name === 'agora.agent.chat-request')).toBe(false);
+      expect(openSpan?.events.some((e) => e.name === 'agora.agent.chat-request')).toBe(true);
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('skips a claimed lib:event SPAN by default (same claim registry as point traffic)', () => {
+    const release = claimDiagnostics('agent', ['step']);
+    const bridge = new DiagnosticsOtelBridge();
+    bridge.start();
+    try {
+      const out = trace('agent', 'step', () => 7, { i: 1 });
+      expect(out).toBe(7);
+      expect(spanByName('agora.agent.step')).toBeUndefined();
+    } finally {
+      bridge.stop();
+      release();
+    }
+  });
+
+  it('bridges a claimed lib:event SPAN when recordClaimed: true is set', () => {
+    const release = claimDiagnostics('agent', ['step']);
+    const bridge = new DiagnosticsOtelBridge({ recordClaimed: true });
+    bridge.start();
+    try {
+      trace('agent', 'step', () => 7, { i: 1 });
+      expect(spanByName('agora.agent.step')).toBeDefined();
+    } finally {
+      bridge.stop();
+      release();
     }
   });
 });

@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.2.2
+
+### Patch Changes
+
+- Fix a connection leak in the Redis transport: the dedicated `duplicate()` subscriber connection is now closed (`disconnect()`) on transport teardown. Previously the relay cleanup only unsubscribed, leaving the socket open so the process could not exit — graceful shutdown and test runs would hang.
+
 ## 0.2.1
 
 ### Patch Changes

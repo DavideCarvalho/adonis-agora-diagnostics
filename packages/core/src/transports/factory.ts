@@ -86,13 +86,26 @@ export const transports = {
       const pub = (connection as unknown as { ioConnection: RedisLike }).ioConnection;
       const sub = (pub as unknown as { duplicate(): RedisLike }).duplicate();
 
-      return createDiagnosticsRedisRelay({
+      const stop = createDiagnosticsRedisRelay({
         pub,
         sub,
         ...selection(ctx.forward),
         ...(config.redisChannel !== undefined ? { redisChannel: config.redisChannel } : {}),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
       });
+
+      // The subscriber is a dedicated `duplicate()` connection created and owned
+      // here (not tracked by `@adonisjs/redis`), so the relay's own cleanup only
+      // unsubscribes it. Close it on teardown too, otherwise the open socket keeps
+      // the process alive and graceful shutdown (and test runs) hang forever.
+      return () => {
+        stop();
+        try {
+          (sub as unknown as { disconnect?: () => void }).disconnect?.();
+        } catch {
+          // best-effort teardown — never throw out of a shutdown hook
+        }
+      };
     };
   },
 

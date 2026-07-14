@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/diagnostics",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A standard convention for @adonis-agora/* AdonisJS libs to emit observability events over node:diagnostics_channel — recorded by a single generic Telescope watcher.",
   "license": "MIT",
   "repository": {
@@ -34,7 +34,11 @@
       "default": "./dist/src/otel/index.js"
     }
   },
-  "files": ["dist/", "README.md", "CHANGELOG.md"],
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "//sideEffects": "NOT false: registry.ts, context_accessor.ts and subscriber.ts install Symbol.for() global slots AT IMPORT TIME (cross-copy-stable channel registry / accessor / subscription set); channel.ts and trace.ts register onRegistryReset hooks at load. A bundler told sideEffects:false could tree-shake these initializers and break cross-copy discovery. Pure modules (index, types) stay tree-shakeable.",
   "sideEffects": [
     "**/registry.js",

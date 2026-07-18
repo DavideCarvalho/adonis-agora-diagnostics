@@ -35,10 +35,10 @@ export interface ContextAccessor {
 }
 
 /**
- * The shared token @adonis-agora/context publishes its accessor under. Exposed so a
- * Nest app can `{ provide: CONTEXT_ACCESSOR, useExisting: ... }` and a consumer
- * can `@Inject(CONTEXT_ACCESSOR) @Optional()` it — symmetric with how the rest
- * of the `@adonis-agora/*` family wires the optional context peer.
+ * The shared capability token `@adonis-agora/context` publishes its accessor under — a process-global
+ * `globalThis` slot, not an IoC binding. Exposed so a consumer can read the current accessor via
+ * {@link getContextAccessor} (or install one with {@link setContextAccessor}) — symmetric with how the
+ * rest of the `@adonis-agora/*` family wires the optional context peer.
  */
 export const CONTEXT_ACCESSOR = capability('context', 'accessor');
 

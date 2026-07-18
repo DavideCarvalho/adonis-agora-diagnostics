@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.2.4
+
+### Patch Changes
+
+- Doc-comment cleanup: the `CONTEXT_ACCESSOR` token comment no longer references NestJS DI — Agora publishes the context accessor on a `globalThis` capability slot, not an IoC binding.
+
 ## 0.2.3
 
 ### Patch Changes

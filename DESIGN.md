@@ -52,15 +52,29 @@ Handlers são registrados em `start/diagnostics.ts` (preload publicado pelo
 - **`node ace configure @adonis-agora/diagnostics`**: registra o provider, publica
   `start/diagnostics.ts` e o adiciona como preload.
 
-## 5. Cross-process (`@adonis-agora/diagnostics-redis`)
+## 5. Cross-process (transportes **in-core**)
 
-`relay.ts` é agnóstico (interface `RedisLike` estrutural — ioredis satisfaz).
-Encaminha canais locais selecionados pro Redis pub/sub e re-emite os recebidos no
-bus local, então `onDiagnostic` dispara cross-process. Loop-safe (echo suppression
-por `nodeId` + guard de re-emit). No Adonis, o provider pega o ioredis cru do
-`@adonisjs/redis` (`connection.ioConnection` + `.duplicate()` pro subscriber) a
-partir do `config/diagnostics_redis.ts`. As conexões são do `@adonisjs/redis` — o
-relay nunca as fecha.
+Os transportes cross-process **não são pacotes separados** — vivem no próprio
+`@adonis-agora/diagnostics` e são selecionados em `config/diagnostics.ts` com a
+factory `transports` (`transports.redis(...)` / `transports.queue(...)`), do mesmo
+jeito que `@adonisjs/session` escolhe um `store`. A peer-dependency do driver
+escolhido (`@adonisjs/redis`, `@adonisjs/queue`) é importada **lazy**, só quando o
+transporte é de fato selecionado. Um único `forward` (`{ libs }` / `{ channels }` /
+`{ all }`) decide o que sai do processo; ambos os transportes compartilham o mesmo
+`createChannelSelector` e o mesmo loop-guard.
+
+**Redis:** `transports/redis.ts` é agnóstico (interface `RedisLike` estrutural —
+ioredis satisfaz). Encaminha canais locais selecionados pro Redis pub/sub e re-emite
+os recebidos no bus local, então `onDiagnostic` dispara cross-process. Loop-safe
+(echo suppression por `nodeId` + guard de re-emit). O provider pega o ioredis cru do
+`@adonisjs/redis` (`connection.ioConnection` + `.duplicate()` pro subscriber) a partir
+de `config/diagnostics.ts`. As conexões são do `@adonisjs/redis` — o relay nunca as
+fecha.
+
+**Queue:** `transports/queue.ts` despacha cada evento selecionado como o job
+`agora.diagnostics.event`; um worker em outro processo executa o job e re-emite o
+evento no bus local. Fire-and-forget: falha de queue é logada, nunca lançada no
+`emit()`.
 
 ## 5.1 OpenTelemetry (auto-bridge embutido, sem pacote extra)
 
@@ -87,10 +101,12 @@ ponte vive **no próprio core**, ligada pelo provider:
 
 ## 6. Pacotes
 
+**Um único pacote.** Redis e queue **não** são pacotes separados — são transportes
+in-core, escolhidos em `config/diagnostics.ts`.
+
 - `@adonis-agora/diagnostics` — núcleo (emit/trace/onDiagnostic + registry + context bridge
-  + **auto-bridge OTel** opcional via `@opentelemetry/api`; subpath `@adonis-agora/diagnostics/otel`)
-- `@adonis-agora/diagnostics-redis` — relay cross-process sobre `@adonisjs/redis`
-- `@adonis-agora/diagnostics-queue` — relay cross-process (fan-out) sobre `@adonisjs/queue`
+  + **auto-bridge OTel** opcional via `@opentelemetry/api`, subpath `@adonis-agora/diagnostics/otel`
+  + os **transportes cross-process** Redis / `@adonisjs/queue` in-core, com peer-deps lazy)
 
 ## 7. Não-objetivos
 

@@ -1,0 +1,164 @@
+---
+title: Typed payloads
+description: Opt into compile-time payload types for emit() and trace() by augmenting the ChannelRegistry via declaration merging — plus the CapabilityRegistry, the same mechanism applied to the globalThis capability slots.
+icon: Braces
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+`emit` and `trace` take a `payload`, and by default that payload is `unknown` — the bus is neutral, and it never imposes a schema. But a producing library usually *does* know the exact shape of every event it emits, and it would like `emit('billing', 'invoice-paid', …)` to fail to compile when the payload is wrong. `@adonis-agora/diagnostics` gives you that **without adding any runtime cost or coupling**: a purely type-level **channel registry** you extend by declaration merging.
+
+<Callout type="info">
+This is entirely opt-in and type-only. Nothing is allocated, no runtime registry of payload shapes exists, and every un-augmented `(lib, event)` pair keeps working on the original `unknown` path. Augmenting the registry only *narrows* types for the channels you declare; it never closes the open, untyped path.
+</Callout>
+
+---
+
+## The default: the untyped path
+
+Out of the box, `emit` and `trace` accept any `lib`/`event` strings and an `unknown` payload:
+
+```ts
+import { emit, trace } from '@adonis-agora/diagnostics'
+
+emit('billing', 'invoice-paid', { invoiceId: 'inv_123', amount: 4200 }) // payload: unknown
+```
+
+That is deliberate — a producer must be able to emit an event nobody has typed yet, and an observer must tolerate envelopes it doesn't recognise. Declaring types is a strict addition on top of this.
+
+---
+
+## Augmenting the `ChannelRegistry`
+
+The registry is a single empty interface, `ChannelRegistry`, shaped as a `lib → event → payload` map. A library declares its channels by **merging into it** from its own types file:
+
+<Steps>
+<Step>
+
+### Declare your channels
+
+```ts title="types/diagnostics.ts"
+import '@adonis-agora/diagnostics'
+
+declare module '@adonis-agora/diagnostics' {
+  interface ChannelRegistry {
+    billing: {
+      'invoice-paid': { invoiceId: string; amount: number }
+      'invoice-voided': { invoiceId: string; reason: string }
+    }
+  }
+}
+```
+
+</Step>
+<Step>
+
+### Get compile-time checking for free
+
+Once that augmentation is in scope, the declared channels are type-checked, while every other pair stays on the untyped path:
+
+```ts
+import { emit } from '@adonis-agora/diagnostics'
+
+// ✓ payload is checked against the declared shape:
+emit('billing', 'invoice-paid', { invoiceId: 'inv_1', amount: 4200 })
+
+// ✗ compile error — `amount` must be a number:
+emit('billing', 'invoice-paid', { invoiceId: 'inv_1', amount: '4200' })
+
+// ✗ compile error — 'refunded' is not a declared billing event... unless you
+//   pass a payload, since unknown events still fall back to the untyped path:
+emit('billing', 'refunded', anything) // payload: unknown — still allowed
+
+// ✓ a completely different lib is untouched — untyped, as always:
+emit('search', 'query', { q: 'shoes' }) // payload: unknown
+```
+
+`trace` and `tracingChannel` narrow identically — the payload argument of `trace('billing', 'invoice-paid', fn, payload)` is checked against the same declared shape, and `tracingChannel('billing', 'invoice-paid')` returns a channel typed to it.
+
+</Step>
+</Steps>
+
+<Callout type="info" title="Where to put the augmentation">
+Put the `declare module` block in a file that is part of your `tsconfig` (a `types/` file, or the library's entry). It only needs to be *compiled*, not imported at runtime — the merge is global to the type checker. A library that emits typed events ships this augmentation so its consumers inherit the types automatically.
+</Callout>
+
+---
+
+## The type helpers, and why the untyped path survives
+
+Three exported type helpers drive the narrowing. You rarely name them directly — `emit`/`trace` use them internally — but they are exported for building typed wrappers of your own.
+
+| Helper | Resolves to |
+| --- | --- |
+| `LibOf` | Every `lib` key declared in `ChannelRegistry` (for autocomplete) **plus any other `string`**. Collapses to plain `string` when the registry is empty. |
+| `EventOf<TLib>` | Every `event` declared for `TLib` (for autocomplete) plus any other `string`; plain `string` when `TLib` isn't a registered lib. |
+| `PayloadOf<TLib, TEvent>` | The declared payload type for that exact pair, or `unknown` when the pair isn't registered. |
+
+`emit` is typed as:
+
+```ts
+function emit<TLib extends LibOf, TEvent extends EventOf<TLib>>(
+  lib: TLib,
+  event: TEvent,
+  payload: PayloadOf<TLib, TEvent>,
+  opts?: EmitOptions,
+): void
+```
+
+The subtle part is that augmenting the registry must **not** turn `lib`/`event` into a closed union — you still have to be able to emit an undeclared channel. That is what the `string & {}` trick inside `LibOf`/`EventOf` buys: registered names surface as autocomplete suggestions, but every other string is still assignable, so the untyped path stays open no matter how much of the registry is declared. `PayloadOf` mirrors it — a registered pair narrows to its declared shape; anything else resolves to `unknown`.
+
+```ts
+import type { PayloadOf } from '@adonis-agora/diagnostics'
+
+// A helper that only accepts a correctly-typed billing payload:
+function recordInvoice(p: PayloadOf<'billing', 'invoice-paid'>) {
+  // p is { invoiceId: string; amount: number }
+}
+```
+
+---
+
+## The `CapabilityRegistry` — the same idea for `globalThis` slots
+
+Events aren't the only cross-repo contract in the ecosystem. Optional peers also publish **capabilities** — an accessor, an `emit` function, a traceparent — on `Symbol.for('@agora/<lib>:<name>')` slots on `globalThis`, resolved structurally so producer and consumer never import each other. `capability(lib, name)` mints those tokens (see [the capability protocol](/docs/diagnostics/getting-started#the-capability-protocol)).
+
+`CapabilityRegistry` is the exact **type-level mirror** of `ChannelRegistry`, applied to those slots: an empty, augmentable `lib → name → value` map, with `CapabilityOf<TLib, TName>` as its `PayloadOf` counterpart. It lets a consumer resolve a `globalThis` capability *with a type* instead of `unknown`:
+
+```ts
+import type { ContextAccessor } from '@adonis-agora/context'
+
+declare module '@adonis-agora/diagnostics' {
+  interface CapabilityRegistry {
+    context: { accessor: ContextAccessor }
+    diagnostics: { emit: typeof import('@adonis-agora/diagnostics').emit }
+  }
+}
+```
+
+With that in scope, a structural lookup is typed end-to-end:
+
+```ts
+import { capability, type CapabilityOf } from '@adonis-agora/diagnostics'
+
+// Resolve the context accessor from the shared slot — no import of @adonis-agora/context:
+const accessor = (globalThis as Record<symbol, unknown>)[capability('context', 'accessor')] as
+  | CapabilityOf<'context', 'accessor'> // → ContextAccessor
+  | undefined
+
+const traceId = accessor?.traceId() // fully typed; undefined when the peer is absent
+```
+
+<Callout type="info">
+`CapabilityOf` resolves to `unknown` for any pair nobody has declared — identical to `PayloadOf`. So the capability lookup degrades exactly like the event path: typed where declared, `unknown` (but still functional) everywhere else. Neither registry is ever required; both are pure ergonomics for teams that want their cross-repo contracts checked at compile time.
+</Callout>
+
+---
+
+## Next steps
+
+- [Getting Started](/docs/diagnostics/getting-started) — `emit`/`trace`/`tracingChannel` and the capability protocol.
+- [Consumers](/docs/diagnostics/consumers) — the observing side of these channels.
+- [Claims](/docs/diagnostics/claims) — coordinating which consumer owns which channel.

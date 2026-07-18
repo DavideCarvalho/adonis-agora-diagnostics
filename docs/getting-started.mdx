@@ -56,6 +56,8 @@ emit('billing', 'invoice-paid', { invoiceId: 'inv_123', amount: 4200 })
 
 The event is published on the channel `agora:billing:invoice-paid`.
 
+By default `payload` is `unknown` — the bus imposes no schema. To get **compile-time payload checking** for your own channels, augment the `ChannelRegistry`; see [Typed payloads](/docs/diagnostics/typed-payloads).
+
 <Callout type="info" title="Free when unobserved">
 `emit` builds and publishes the envelope **only when the channel has subscribers** (`channel.hasSubscribers`). A production process with no observer attached pays essentially nothing per call — so libraries can emit by default. `emit` also never throws: observability must never break the code path that produced the event.
 </Callout>
@@ -119,6 +121,16 @@ trace('durable', 'step', () => runStep(), { name }, { traceId })
 
 Under the hood, `traceId` is read through a structural `ContextAccessor` interface registered on a cross-copy-stable `Symbol.for('@agora/context:accessor')` slot — exported here as `CONTEXT_ACCESSOR`. `@adonis-agora/context` is an optional peer; it is never imported by this package.
 
+The registration is a matched pair: `setContextAccessor(accessor)` installs it, `getContextAccessor()` reads it back (returning `null` when unset), and `resolveTraceId()` is the exact, never-throwing resolution `emit`/`trace` perform per event — a throwing accessor simply yields `undefined` so observability never breaks the caller. You rarely touch these directly (the context provider calls `setContextAccessor` for you), but they are the seam for registering a custom accessor, or for reading the resolved id from your own consumer:
+
+```ts
+import { getContextAccessor, resolveTraceId, setContextAccessor } from '@adonis-agora/diagnostics'
+
+setContextAccessor(myAccessor)      // install a structural ContextAccessor
+getContextAccessor()                // → myAccessor (or null)
+resolveTraceId()                    // → the current trace id, or undefined — never throws
+```
+
 ## API surface
 
 | Export | Description |
@@ -134,10 +146,14 @@ Under the hood, `traceId` is read through a structural `ContextAccessor` interfa
 | `CHANNEL_PREFIX` | `'agora'`. |
 | `SCHEMA_VERSION` / `SPAN_SCHEMA_VERSION` | `1` — envelope schema versions stamped as `v`. |
 | `registeredChannels()` | Snapshot of every registered base channel name. |
+| `registerChannel(name)` | Record a channel name in the discovery registry (idempotent), firing `onChannelRegistered` listeners the first time. `emit`/`getChannel` call it for you; call it by hand only to pre-announce a channel before its first emit. |
 | `onChannelRegistered(cb)` | Notified once per future channel registration; returns an unsubscribe. |
+| `resetRegistry()` | Test-only: forget every registered channel and listener, so a suite can assert registration in isolation. Not part of the runtime contract. |
 | `parseChannelName(name)` | Parse `agora:<lib>:<event>` into `{ lib, event }`, or `null`. |
 | `createChannelSelector(selection, forward)` | Shared engine for relays — subscribe `forward` to matched channels. |
-| `setContextAccessor(accessor \| null)` | Register the accessor `emit`/`trace` read `traceId` from. |
+| `setContextAccessor(accessor \| null)` | Register (or clear, with `null`) the accessor `emit`/`trace` read `traceId` from. |
+| `getContextAccessor()` | The currently-registered `ContextAccessor`, or `null` when none is set — the read side of `setContextAccessor`. |
+| `resolveTraceId()` | The current trace id from the registered accessor, or `undefined`. Never throws (a throwing accessor resolves to `undefined`) — the exact resolution `emit`/`trace` use internally. |
 | `CONTEXT_ACCESSOR` | Shared DI token for the optional context accessor. |
 | `capability(lib, name)` | Mint the `Symbol.for('@agora/<lib>:<name>')` capability token. |
 | `assertCapabilityNaming(lib, tokens)` | Conformance helper: assert tokens follow the canonical naming. |

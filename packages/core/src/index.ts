@@ -56,6 +56,7 @@ export {
 export {
   SPAN_SCHEMA_VERSION,
   trace,
+  TRACE_SLOT,
   type TraceChannelNames,
   traceChannelNames,
   type TracingChannel,

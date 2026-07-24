@@ -158,6 +158,7 @@ resolveTraceId()                    // → the current trace id, or undefined �
 | `capability(lib, name)` | Mint the `Symbol.for('@agora/<lib>:<name>')` capability token. |
 | `assertCapabilityNaming(lib, tokens)` | Conformance helper: assert tokens follow the canonical naming. |
 | `EMIT_SLOT` | `Symbol.for('@agora/diagnostics:emit')` — the global slot `emit` is published on. |
+| `TRACE_SLOT` | `Symbol.for('@agora/diagnostics:trace')` — the global slot `trace` is published on. |
 
 ## The capability protocol
 
@@ -172,7 +173,7 @@ const ACCESSOR = capability('context', 'accessor') // Symbol.for('@agora/context
 assertCapabilityNaming('context', { ACCESSOR })
 ```
 
-This is the same mechanism `emit` itself uses: it publishes onto `EMIT_SLOT` at module load, so other Agora libs can republish through `globalThis[Symbol.for('@agora/diagnostics:emit')]` structurally — never importing this package, no-op when it's absent.
+This is the same mechanism `emit` itself uses: it publishes onto `EMIT_SLOT` at module load, so other Agora libs can republish through `globalThis[Symbol.for('@agora/diagnostics:emit')]` structurally — never importing this package, no-op when it's absent. `trace` does the same onto `TRACE_SLOT` (`globalThis[Symbol.for('@agora/diagnostics:trace')]`).
 
 ## Where to go next
 

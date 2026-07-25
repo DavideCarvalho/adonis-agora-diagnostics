@@ -1,4 +1,5 @@
 import diagnostics_channel, { type Channel } from 'node:diagnostics_channel';
+import { capability } from './capability.js';
 import { channelName } from './channel.js';
 import { resolveTraceId } from './context_accessor.js';
 import { onRegistryReset, registerChannel } from './registry.js';
@@ -266,3 +267,14 @@ export function tracingChannel<TLib extends LibOf, TEvent extends EventOf<TLib>>
     trace: (fn, payload, opts) => trace(lib, event, fn, payload, opts),
   };
 }
+
+/**
+ * Cross-copy-stable global slot the ecosystem reads `trace` from. Other Agora libs
+ * (e.g. `@adonis-agora/media`) republish their spans through
+ * `globalThis[Symbol.for('@agora/diagnostics:trace')]` STRUCTURALLY, so they never
+ * import `@adonis-agora/diagnostics` and no-op when it is absent. Published at module
+ * load — merely importing this package (which the provider does) wires it. Same
+ * decoupling contract as `EMIT_SLOT` (which publishes `emit`).
+ */
+export const TRACE_SLOT = capability('diagnostics', 'trace');
+(globalThis as Record<symbol, unknown>)[TRACE_SLOT] = trace;

@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.2.5
+
+### Patch Changes
+
+- [#4](https://github.com/DavideCarvalho/adonis-diagnostics/pull/4) [`eb454b1`](https://github.com/DavideCarvalho/adonis-diagnostics/commit/eb454b15352310eb50766436c4a38e0df248c5d4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Publish `trace` on a cross-copy-stable global capability slot — `globalThis[Symbol.for('@agora/diagnostics:trace')]` (`TRACE_SLOT`) — mirroring the existing `EMIT_SLOT`/`emit` decoupling contract. Sibling `@adonis-agora/*` libs (e.g. `@adonis-agora/media`) can now republish their spans through the slot **structurally** — reading it rather than importing this package — so they emit real `start`/`end`/`asyncStart`/`asyncEnd`/`error` span events over `node:diagnostics_channel` when diagnostics is present and no-op when it is absent, with zero version coupling. Covered by the capability anti-drift guard and documented in getting-started.
+
 ## 0.2.4
 
 ### Patch Changes

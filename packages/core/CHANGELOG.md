@@ -1,5 +1,37 @@
 # @adonis-agora/diagnostics
 
+## 0.2.6
+
+### Patch Changes
+
+- [#20](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/20) [`2ddccbf`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/2ddccbfb14abcbead619b225017f7ae9203760f2) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Declare a Node engine **range** instead of an exact version
+
+  `engines.node` was pinned to the single build `v26.7.0`, so installing the package on
+  any other Node — including every currently supported LTS — printed an unsupported-engine
+  warning, and failed outright under `engine-strict`. It now declares `>=20.6.0`, the
+  range the package actually needs.
+
+- [#20](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/20) [`2ddccbf`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/2ddccbfb14abcbead619b225017f7ae9203760f2) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Restore the published `config/diagnostics.ts` and `start/diagnostics.ts` stubs
+
+  Both stub files shipped empty, so `node ace add @adonis-agora/diagnostics` (and
+  `node ace configure`) wrote an **empty** `config/diagnostics.ts` and
+  `start/diagnostics.ts` into the app: no `defineConfig` call, no place to register
+  handlers, and nothing describing the `otel` / `default` / `forward` / `nodeId` /
+  `transports` keys. Re-run `node ace configure @adonis-agora/diagnostics` to get the
+  real files.
+
+  The stubs are back, with backticks escaped so the template renderer keeps them, and a
+  test now fails if any published `.stub` is empty, lacks its `exports({ to })` target,
+  or no longer renders.
+
+- [#20](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/20) [`2ddccbf`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/2ddccbfb14abcbead619b225017f7ae9203760f2) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Correct the documented `queue:work` invocation for the queue transport
+
+  `QueueTransportConfig.queue` pointed at `node ace queue:work {queue}`. `queue` is a
+  flag on that command, not a positional argument, so the documented form starts a
+  worker on the `default` queue instead — where the relay never dispatches anything, and
+  forwarded events are never consumed. The correct form is
+  `node ace queue:work --queue={queue}`.
+
 ## 0.2.5
 
 ### Patch Changes

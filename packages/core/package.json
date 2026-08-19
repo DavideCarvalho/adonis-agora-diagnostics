@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/diagnostics",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A standard convention for @adonis-agora/* AdonisJS libs to emit observability events over node:diagnostics_channel — recorded by a single generic Telescope watcher.",
   "license": "MIT",
   "repository": {

@@ -35,8 +35,9 @@ export interface RedisTransportConfig {
 /** Options for the `@adonisjs/queue` transport. */
 export interface QueueTransportConfig {
   /**
-   * `@adonisjs/queue` queue name to dispatch the relay job onto. A worker must process this queue
-   * (e.g. `node ace queue:work {queue}`). Omit to use the job's default queue (`default`).
+   * `@adonisjs/queue` queue name to dispatch the relay job onto. A worker must process this queue —
+   * `queue` is a FLAG on `queue:work`, not a positional argument, so it is
+   * `node ace queue:work --queue={queue}`. Omit to use the job's default queue (`default`).
    */
   queue?: string;
 }

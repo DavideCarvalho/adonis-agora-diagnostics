@@ -16,8 +16,9 @@ npm i @adonis-agora/diagnostics
 node ace configure @adonis-agora/diagnostics
 ```
 
-`configure` registers the provider and publishes `start/diagnostics.ts` (preloaded)
-where you register handlers.
+`configure` registers the provider and publishes two files: `config/diagnostics.ts`
+(the `otel` flag and the cross-process transports) and `start/diagnostics.ts`
+(preloaded), where you register handlers.
 
 ## Emit
 

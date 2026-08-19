@@ -140,3 +140,22 @@ expect((seen[0].payload as any).allowed).toBe(false)
 <Callout type="info">
 By design, **events are only built when something is subscribed** — so asserting on them requires an active subscription, exactly as above. For span assertions, subscribe to the sub-channels from `traceChannelNames(lib, event)` and inspect the `phase`/`durationMs`/`spanId` fields of each `SpanEvent`.
 </Callout>
+
+### Asserting on the registry
+
+The channel registry is process-global and cumulative, so a test asserting "emitting this registered exactly one channel" sees every channel any earlier test touched. `resetRegistry()` gives each test a clean slate:
+
+```ts
+import { emit, registeredChannels, resetRegistry } from '@adonis-agora/diagnostics'
+
+beforeEach(() => resetRegistry())
+
+test('emitting registers the channel', () => {
+  emit('billing', 'invoice-paid', { invoiceId: 'inv_123' })
+  expect(registeredChannels()).toEqual(['agora:billing:invoice-paid'])
+})
+```
+
+It forgets every registered channel name and every `onChannelRegistered` listener, and it drops the memoized channel lookups with them — otherwise a channel cached before the reset would never re-register and would stay invisible to discovery for the rest of the run. After a reset, the next `emit`/`getChannel` registers each channel afresh.
+
+This is a **test hook**, not part of the runtime contract: calling it in a running app deregisters channels a live observer is relying on to discover the feed.

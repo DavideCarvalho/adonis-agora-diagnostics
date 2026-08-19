@@ -1,0 +1,51 @@
+{{{
+  exports({ to: app.configPath('diagnostics.ts') })
+}}}
+import { defineConfig } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  /*
+  |--------------------------------------------------------------------------
+  | OpenTelemetry bridge
+  |--------------------------------------------------------------------------
+  |
+  | Auto-bridge \`trace()\` spans to OpenTelemetry when an OTel SDK is resolvable.
+  | Set it to false to keep the emit/trace hot path OTel-free even when an SDK
+  | is installed.
+  |
+  */
+  otel: true,
+
+  /*
+  |--------------------------------------------------------------------------
+  | Cross-process transports
+  |--------------------------------------------------------------------------
+  |
+  | \`node:diagnostics_channel\` is process-local. Diagnostics stays local-only
+  | until you name a \`default\` transport here — emit/trace/onDiagnostic keep
+  | working either way, just within a single process.
+  |
+  | default    — the transport (a key of \`transports\`) whose relay starts in
+  |              this process. Omit for local-only diagnostics.
+  | forward    — which local channels to relay: { libs: [...] }, exact
+  |              { channels: [{ lib, event }] }, or { all: true }.
+  | nodeId     — unique id for THIS process, used to drop its own echoes.
+  |              Defaults to a random id per process.
+  | transports — the named transports you use, built with the \`transports\`
+  |              factory.
+  |
+  | To turn fan-out on, install the driver's peer dependencies, import the
+  | factory alongside defineConfig:
+  |
+  |   import { defineConfig, transports } from '@adonis-agora/diagnostics'
+  |
+  | and uncomment the block below.
+  |
+  */
+  // default: 'redis',
+  // forward: { libs: ['resilience', 'durable'] },
+  // transports: {
+  //   redis: transports.redis({ connection: 'main' }),   // @adonisjs/redis + ioredis
+  //   queue: transports.queue({ queue: 'diagnostics' }), // @adonisjs/queue
+  // },
+})

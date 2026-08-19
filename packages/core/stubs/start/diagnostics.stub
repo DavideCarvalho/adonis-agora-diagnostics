@@ -1,0 +1,30 @@
+{{{
+  exports({ to: app.startPath('diagnostics.ts') })
+}}}
+/*
+|--------------------------------------------------------------------------
+| Diagnostics handlers
+|--------------------------------------------------------------------------
+|
+| This file is preloaded at boot, so every handler registered here is
+| subscribed before the app serves traffic. Handlers run inline on the
+| emitting call — keep them cheap and hand heavy work off to a worker.
+|
+| Example — observe every agora:resilience:* channel, including the ones
+| registered later:
+|
+|   import { onDiagnostic } from '@adonis-agora/diagnostics'
+|
+|   onDiagnostic('resilience', (event) => {
+|     logger.info({ event: event.event, traceId: event.traceId }, event.lib)
+|   })
+|
+| Example — react to one exact channel:
+|
+|   onDiagnostic('authz', 'decision', (event) => {
+|     if ((event.payload as { allowed?: boolean }).allowed === false) {
+|       alertOnDenial(event)
+|     }
+|   })
+|
+*/

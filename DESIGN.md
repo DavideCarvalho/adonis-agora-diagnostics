@@ -68,8 +68,10 @@ ioredis satisfaz). Encaminha canais locais selecionados pro Redis pub/sub e re-e
 os recebidos no bus local, então `onDiagnostic` dispara cross-process. Loop-safe
 (echo suppression por `nodeId` + guard de re-emit). O provider pega o ioredis cru do
 `@adonisjs/redis` (`connection.ioConnection` + `.duplicate()` pro subscriber) a partir
-de `config/diagnostics.ts`. As conexões são do `@adonisjs/redis` — o relay nunca as
-fecha.
+de `config/diagnostics.ts`. A perna `pub` é do `@adonisjs/redis` e o relay nunca a
+fecha; a `sub` é o `duplicate()` que o próprio transporte criou (o `@adonisjs/redis`
+não rastreia essa conexão), então o teardown dá `disconnect()` nela — senão o socket
+aberto segura o processo e o shutdown/os testes penduram.
 
 **Queue:** `transports/queue.ts` despacha cada evento selecionado como o job
 `agora.diagnostics.event`; um worker em outro processo executa o job e re-emite o

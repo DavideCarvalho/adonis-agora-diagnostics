@@ -30,15 +30,11 @@ node ace configure @adonis-agora/diagnostics
 </Tab>
 </Tabs>
 
-The `configure` step does three things (see `configure.ts`):
+Configuring leaves you with three things:
 
-1. registers the service provider `@adonis-agora/diagnostics/diagnostics_provider` in `adonisrc.ts`;
-2. publishes `config/diagnostics.ts` (the `otel` flag and cross-process [transports](/docs/diagnostics/transports));
-3. publishes `start/diagnostics.ts` and registers it as a **preload file**, so your handlers are subscribed before the app serves traffic.
-
-<Callout type="info" title="What the provider actually does">
-The `emit` / `trace` / `onDiagnostic` surface is just process-global functions over `node:diagnostics_channel`, so there is almost nothing to register. The provider's jobs are (1) tearing down every `onDiagnostic` subscription on graceful shutdown so a reloaded process doesn't leak listeners, and (2) starting the [OpenTelemetry bridge](/docs/diagnostics/opentelemetry) automatically when an OTel SDK is installed.
-</Callout>
+1. the service provider `@adonis-agora/diagnostics/diagnostics_provider` registered in `adonisrc.ts`;
+2. `config/diagnostics.ts`, where the `otel` flag and the cross-process [transports](/docs/diagnostics/transports) live — see the [config reference](/docs/diagnostics/transports#config-reference);
+3. `start/diagnostics.ts`, registered as a **preload file**, so the handlers you write there are subscribed before the app serves traffic.
 
 ## Emitting POINT events
 
@@ -61,6 +57,23 @@ By default `payload` is `unknown` — the bus imposes no schema. To get **compil
 <Callout type="info" title="Free when unobserved">
 `emit` builds and publishes the envelope **only when the channel has subscribers** (`channel.hasSubscribers`). A production process with no observer attached pays essentially nothing per call — so libraries can emit by default. `emit` also never throws: observability must never break the code path that produced the event.
 </Callout>
+
+### Timing a POINT event
+
+`emit` is a "this happened" fact, not a span — but plenty of facts are about something that took time. Pass `durationMs` and it is stamped onto the envelope:
+
+```ts
+const startedAt = performance.now()
+const rows = await runReport(params)
+
+emit('reporting', 'report-generated', { reportId, rows: rows.length }, {
+  durationMs: performance.now() - startedAt,
+})
+```
+
+It exists so an exporter can build a **histogram** — p50/p95/p99 of how long report generation takes — rather than only counting how many reports were generated. That is the whole reason it sits on the envelope instead of inside `payload`: a duration buried in your own payload shape is an opaque field to a generic observer, while `durationMs` is part of the contract every consumer already reads.
+
+Reach for `trace()` instead when you want the operation's start, end and failure as separate correlated events. Use `durationMs` when one event is enough and you already have the number.
 
 ### Load-shedding a hot event
 
@@ -148,7 +161,7 @@ resolveTraceId()                    // → the current trace id, or undefined �
 | `registeredChannels()` | Snapshot of every registered base channel name. |
 | `registerChannel(name)` | Record a channel name in the discovery registry (idempotent), firing `onChannelRegistered` listeners the first time. `emit`/`getChannel` call it for you; call it by hand only to pre-announce a channel before its first emit. |
 | `onChannelRegistered(cb)` | Notified once per future channel registration; returns an unsubscribe. |
-| `resetRegistry()` | Test-only: forget every registered channel and listener, so a suite can assert registration in isolation. Not part of the runtime contract. |
+| `resetRegistry()` | Test-only: forget every registered channel and listener, and drop the memoized channel cache with them, so the next `emit`/`getChannel` re-registers. Not part of the runtime contract. |
 | `parseChannelName(name)` | Parse `agora:<lib>:<event>` into `{ lib, event }`, or `null`. |
 | `createChannelSelector(selection, forward)` | Shared engine for relays — subscribe `forward` to matched channels. |
 | `setContextAccessor(accessor \| null)` | Register (or clear, with `null`) the accessor `emit`/`trace` read `traceId` from. |

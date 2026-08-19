@@ -17,6 +17,11 @@
       "matchDepTypes": ["peerDependencies"],
       "rangeStrategy": "widen",
       "automerge": false
+    },
+    {
+      "description": "engines.node is a supported-range declaration, not a dependency: the global rangeStrategy 'pin' would rewrite it to the exact build we happen to be on, breaking installs on every other Node.",
+      "matchDepTypes": ["engines"],
+      "enabled": false
     }
   ],
   "lockFileMaintenance": {

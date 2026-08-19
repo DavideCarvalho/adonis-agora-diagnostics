@@ -14,21 +14,21 @@ The core package ships an **OpenTelemetry bridge** that reconstructs real OTel s
 
 ## Auto-start
 
-The diagnostics provider's `boot()` tries to load `@adonis-agora/diagnostics/otel` and start it. If `@opentelemetry/api` can't be resolved (no OTel SDK installed), the import fails and the bridge is skipped silently. If it resolves, the bridge starts and is torn down on `shutdown()`.
-
-So if you have an OTel SDK in your app (e.g. `@adonisjs/otel` or a manual `NodeSDK` setup), every `trace()` span already becomes an OTel span. Nothing else to do.
+If `@opentelemetry/api` can be resolved — because your app has an OTel SDK, e.g. `@adonisjs/otel` or a manual `NodeSDK` setup — the bridge starts with the app and stops with it. Every `trace()` span is already an OTel span; there is nothing to install or call. With no SDK present the bridge is skipped entirely, silently, and OTel is never even loaded.
 
 ### Opting out
 
-Disable the bridge with `otel: false` in your diagnostics config:
+Set `otel: false` in your diagnostics config and the bridge never starts, SDK or not:
 
 ```ts title="config/diagnostics.ts"
-export default {
+import { defineConfig } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
   otel: false,
-}
+})
 ```
 
-The provider reads `config.get('diagnostics')` and returns early from `boot()` when `otel === false`.
+Do that when you want `emit`/`trace` to stay OTel-free on a hot path even though an SDK is installed. See the [config reference](/docs/diagnostics/transports#config-reference) for the other keys.
 
 ## What the bridge does
 
@@ -38,7 +38,7 @@ It subscribes to every `agora:<lib>:<event>` base channel and its five span sub-
 - **`end`** (sync) / **`asyncEnd`** close the span OK, recording `agora.result` (when scalar) and `agora.duration_ms`.
 - **`error`** records the exception and closes the span with status `ERROR`.
 
-POINT events (`emit`) are added to the **active** span as span events named `agora.<lib>.<event>` with the same attribute shape. (Disable this with `recordPointEvents: false`.)
+POINT events (`emit`) are added to the **active** span as span events named `agora.<lib>.<event>`, carrying `agora.lib`, `agora.event` and the flattened payload, timestamped with the envelope's `ts`. With no active span there is nothing to attach them to, so they are dropped. (Disable this with `recordPointEvents: false`.)
 
 Events a lib-specific consumer has [claimed](/docs/diagnostics/claims) are **skipped** by default — the claiming lib already records its own typed observation, so bridging them again would duplicate every such event. Override with `recordClaimed: true`.
 

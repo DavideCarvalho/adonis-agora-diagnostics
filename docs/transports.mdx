@@ -67,6 +67,20 @@ npm i @adonisjs/queue
 With no `default` set, diagnostics stays in-process — `emit`/`trace`/`onDiagnostic` all still work, just within the one process. Setting `default` to a name that isn't in `transports` throws at boot, so a typo never silently disables fan-out.
 </Callout>
 
+## Config reference
+
+The published config file takes exactly five keys, all optional. `defineConfig` is an identity helper — it exists to type-check the object you pass it.
+
+| Key | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `otel` | `boolean` | `true` | Bridge `trace()` spans to OpenTelemetry when an OTel SDK is resolvable. `false` keeps the `emit`/`trace` path OTel-free even with an SDK installed. See [OpenTelemetry](/docs/diagnostics/opentelemetry). |
+| `default` | `string` | — | Name of the transport (a key of `transports`) whose relay starts in **this** process. Omit for local-only diagnostics. A name missing from `transports` throws at boot. |
+| `forward` | `ChannelSelection` | `{}` | Which local channels the relay forwards: `{ libs }`, `{ channels }`, `{ all }`. See [What gets forwarded](#what-gets-forwarded). |
+| `nodeId` | `string` | random per process | Identifies **this** process on the wire. A relayed event carries the id of the process that forwarded it, and a process drops events stamped with its own id — that's what stops an event from bouncing back to its origin. Set it only when you need a stable, human-readable id (e.g. in logs); the random default is correct for every normal deployment. |
+| `transports` | `Record<string, TransportProvider>` | `{}` | The named transports you can select with `default`. Values come from the `transports` factory, or from [your own transport](#write-your-own-transport). |
+
+Declaring a transport costs nothing: the factories return a lazy thunk, and the driver's peer dependency is imported only when that transport is the selected `default`. So it is fine to list Redis *and* queue and pick between them per environment.
+
 ### What gets forwarded
 
 `forward` is a single `ChannelSelection`, shared by whichever transport starts:
@@ -76,7 +90,6 @@ With no `default` set, diagnostics stays in-process — `emit`/`trace`/`onDiagno
 | `libs` | Forward **every** event of these libs — including channels registered later (e.g. `['resilience', 'durable']`). |
 | `channels` | Forward these exact `{ lib, event }` pairs, in addition to `libs`. |
 | `all` | Forward **every** `agora:` channel. Overrides `libs`/`channels`. |
-| `nodeId` (top-level) | Unique id for this process, used for echo suppression. Defaults to a random id per process. |
 
 Both transports share the same selection engine (`createChannelSelector`) and the same loop-guard design — they differ only in how a selected event leaves the process.
 
@@ -91,11 +104,11 @@ transports.redis({
 })
 ```
 
-It uses the raw ioredis client behind the AdonisJS connection (`publish`/`subscribe`) and a `duplicate()` for the subscriber leg. The connections are owned by `@adonisjs/redis`; the relay never closes them.
+A Redis client that is subscribed cannot also publish, so the transport needs two legs. The **publisher** is the raw ioredis client behind the named `@adonisjs/redis` connection — owned by `@adonisjs/redis`, and never closed here. The **subscriber** is a `duplicate()` of it, created and owned by the transport itself; `@adonisjs/redis` does not track it, so the transport closes it on teardown. Without that close, the open socket would keep the process alive and a graceful shutdown (or a test run) would hang.
 
 ## The queue transport
 
-`transports.queue(config)` relays over [`@adonisjs/queue`](https://github.com/adonisjs/queue). A forwarded event is dispatched as the `agora.diagnostics.event` job; a **worker running in another process** executes that job and re-emits the event onto its local bus.
+`transports.queue(config)` relays over [`@adonisjs/queue`](https://github.com/adonisjs/queue). A forwarded event is dispatched as the `agora.diagnostics.event` job, carrying a `DiagnosticsEventEnvelope`; a **worker running in another process** executes that job and re-emits the event onto its local bus.
 
 ```ts
 transports.queue({
@@ -103,21 +116,207 @@ transports.queue({
 })
 ```
 
-A worker must be running to receive forwarded events:
+The envelope on the wire is deliberately small:
 
-```sh title="terminal"
-node ace queue:work diagnostics
+```ts
+interface DiagnosticsEventEnvelope {
+  node: string          // id of the process that forwarded the event
+  env: DiagnosticEvent  // the original envelope, exactly as emitted
+}
 ```
 
-The provider registers the job class with the queue `Locator` at boot, so the worker resolves it by name (`agora.diagnostics.event`) even if your `locations` glob doesn't include it. Forwarding is fire-and-forget: a queue outage is logged, never thrown into `emit()`.
+`node` is what makes echo suppression work: a process ignores any envelope stamped with its own id. `env` is untouched — `ts`, `lib`, `event`, `traceId`, `payload` and `durationMs` arrive on the far side exactly as `emit` built them, so a remote `onDiagnostic` handler cannot tell the event came over the wire.
+
+A worker must be running to receive forwarded events. `queue` is a **flag** on `queue:work`, not a positional argument — pass a bare name and the worker silently starts on the `default` queue instead, where the relay never dispatches anything:
+
+```sh title="terminal"
+node ace queue:work --queue=diagnostics
+```
+
+A process that starts this transport can run the worker for it as-is: the job is resolvable there by its name, `agora.diagnostics.event`, whether or not your `locations` glob covers the package. Forwarding is fire-and-forget: a queue outage is reported, never thrown into `emit()`.
+
+### When dispatching fails
+
+`job.dispatch(...)` reaches a network backend, so it can reject. The relay never lets that reach the `emit()` that triggered it — the rejection is routed to `onDispatchError` instead. Through `transports.queue(...)` it is already wired to the application logger:
+
+```
+[error] failed to relay diagnostics event to queue
+```
+
+Wiring your own is a one-liner when you drive the relay directly, and it is the only way to notice that fan-out has silently stopped:
+
+```ts
+import { createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
+
+const stop = createDiagnosticsQueueRelay({
+  job: DiagnosticsEventJob,
+  all: true,
+  onDispatchError: (error) => {
+    metrics.increment('diagnostics.relay.dispatch_failed')
+    logger.error({ err: error }, 'diagnostics relay could not reach the queue')
+  },
+})
+```
+
+Omit it and dispatch failures are swallowed: events simply stop arriving on the other side, with nothing in the logs to say why.
+
+### Worker-only processes
+
+This is the number-one reason forwarded events don't arrive. Re-emission happens through a **re-emitter bound in the worker's own process**, and starting the transport is what binds one. A worker process that never starts the transport runs the job as a **no-op**: it succeeds, the queue reports it processed, and no local handler ever fires.
+
+So the worker needs the transport selected too — it is not enough for the web process to have it. What the worker does *not* need is to forward anything of its own; an empty `forward` gives you a pure consumer:
+
+```ts title="config/diagnostics.ts"
+import env from '#start/env'
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  default: 'queue',
+
+  // The web process fans out; the worker only consumes.
+  forward: env.get('DIAGNOSTICS_FORWARD', false) ? { all: true } : {},
+
+  transports: {
+    queue: transports.queue({ queue: 'diagnostics' }),
+  },
+})
+```
+
+The trap is gating `default` itself on the environment: with `default` unset the worker starts no transport, binds no re-emitter, and every relayed event is silently dropped there. Gate `forward`, not `default`.
+
+`getActiveReEmitter()` is how you check, in the process itself, which side of that line you're on. It returns `null` when nothing is bound — the exact state in which relayed events go nowhere:
+
+```ts
+import { getActiveReEmitter } from '@adonis-agora/diagnostics'
+
+if (getActiveReEmitter() === null) {
+  logger.warn('diagnostics: no re-emitter bound — relayed events are dropped in this process')
+}
+```
+
+`bindRelayReEmitter` is the matching low-level seam, for wiring a re-emitter without starting a relay — a non-Adonis worker, or a test that exercises the job directly:
+
+```ts
+import { bindRelayReEmitter } from '@adonis-agora/diagnostics'
+
+const unbind = bindRelayReEmitter({
+  nodeId: 'reporting-worker',
+  // Binding always installs the package's own re-emit, keyed on the nodeId above,
+  // so the loop guard can never be bypassed — this member is not called.
+  reEmit: () => {},
+})
+
+// …on shutdown
+unbind()
+```
+
+What you really bind is the `nodeId`: envelopes stamped with it are dropped as this process's own echo, and every other envelope is published onto the local bus under its original `lib`/`event`, so `onDiagnostic('billing', …)` here fires for an event emitted in the web process. Binding is last-write-wins — a later call replaces the current re-emitter, and the returned unbind clears it only if it is still the active one.
 
 <Callout type="warn" title="A queue is fan-out, not request/response">
 The relay only dispatches; it never waits. That fits diagnostics (you want events to spread, not to block the emitter). Pick the queue transport when a queue is already your cross-process backbone; pick Redis when you want a dedicated low-latency pub/sub path.
 </Callout>
 
+## Write your own transport
+
+`transports.redis` and `transports.queue` are not privileged — `config.transports` is a plain `Record<string, TransportProvider>`, and a `TransportProvider` is any thunk with this shape:
+
+```ts
+type TransportProvider = (ctx: TransportContext) => Promise<() => void>
+
+interface TransportContext {
+  app: ApplicationService   // the booted app — resolve the logger, connections, config…
+  forward: ChannelSelection // the config's `forward`, ready to hand to createChannelSelector
+  nodeId?: string           // the config's `nodeId`, when one was set
+}
+```
+
+The thunk is called once, after the container is ready, and only for the transport named by `default`. It must return a **synchronous** teardown, which runs on graceful shutdown — kick off async closes from inside it, but don't return a promise. Everything the transport opened is its own to close there: a socket left open keeps the process from exiting.
+
+To be a good citizen a transport does four things: subscribe with `createChannelSelector`, stamp each outgoing event with `nodeId`, drop incoming events stamped with its own `nodeId`, and guard a re-emitted event from being forwarded straight back out. Here is a complete NATS transport doing all four:
+
+```ts title="config/diagnostics.ts"
+import { randomUUID } from 'node:crypto'
+import { connect } from 'nats'
+import { createChannelSelector, defineConfig, getChannel } from '@adonis-agora/diagnostics'
+import type { DiagnosticEvent, TransportProvider } from '@adonis-agora/diagnostics'
+
+const SUBJECT = 'agora.diagnostics.relay'
+
+function natsTransport(servers: string): TransportProvider {
+  return async (ctx) => {
+    const nc = await connect({ servers })
+    const logger = await ctx.app.container.make('logger')
+    const nodeId = ctx.nodeId ?? randomUUID()
+    const encoder = new TextEncoder()
+    const decoder = new TextDecoder()
+
+    // Events we just re-emitted from the network — never send them back out.
+    const reEmitting = new WeakSet<object>()
+
+    const forward = (msg: unknown) => {
+      if (typeof msg !== 'object' || msg === null) return
+      if (reEmitting.has(msg)) return
+      try {
+        nc.publish(SUBJECT, encoder.encode(JSON.stringify({ node: nodeId, env: msg })))
+      } catch (err) {
+        // forward() runs inside emit() — it must never throw back into the caller
+        logger.error({ err }, 'diagnostics: NATS publish failed')
+      }
+    }
+
+    const selector = createChannelSelector(ctx.forward, forward)
+
+    const subscription = nc.subscribe(SUBJECT)
+    void (async () => {
+      for await (const message of subscription) {
+        let parsed: { node?: unknown; env?: DiagnosticEvent }
+        try {
+          parsed = JSON.parse(decoder.decode(message.data))
+        } catch {
+          continue // ignore malformed
+        }
+        if (parsed.node === nodeId) continue // our own echo
+        const env = parsed.env
+        if (!env || typeof env.lib !== 'string' || typeof env.event !== 'string') continue
+
+        reEmitting.add(env)
+        try {
+          getChannel(env.lib, env.event).publish(env)
+        } catch {
+          // a local subscriber threw — never propagate it into the network loop
+        } finally {
+          reEmitting.delete(env)
+        }
+      }
+    })()
+
+    // Synchronous teardown: stop forwarding, then close what we opened.
+    return () => {
+      selector.stop()
+      subscription.unsubscribe()
+      void nc.drain()
+    }
+  }
+}
+
+export default defineConfig({
+  default: 'nats',
+  forward: { all: true },
+  transports: {
+    nats: natsTransport('nats://127.0.0.1:4222'),
+  },
+})
+```
+
+`createChannelSelector(selection, forward)` is the same engine both built-in transports use. It subscribes `forward` to every channel matched by the selection — the exact `channels`, every channel of the wildcard `libs`, or all of them — including channels registered **after** the relay started, so a lib whose first event fires an hour into the process is picked up automatically. Each channel is subscribed at most once, and `selector.stop()` removes every subscription plus the future-registration listener.
+
+<Callout type="warn" title="Never throw out of forward()">
+`forward` runs **inline** inside the `emit()` that produced the event. A throw there would surface in unrelated application code, and a slow call there slows down the emitting request. Catch everything, and keep the send non-blocking.
+</Callout>
+
 ## Advanced: the relays without AdonisJS
 
-The transport factories wrap two framework-agnostic functions, exported for non-Adonis use, tests, or custom wiring. They take the raw collaborators (a Redis client pair, or a job with `dispatch`) and the same selection options:
+The transport factories wrap two framework-agnostic functions, exported for non-Adonis use, tests, or custom wiring. They take the raw collaborators (a Redis client pair, or a job with `dispatch`) and the same selection options. Both return a teardown that removes every local subscription:
 
 ```ts
 import { createDiagnosticsRedisRelay, createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
@@ -127,4 +326,62 @@ const stop = createDiagnosticsRedisRelay({ pub, sub, libs: ['resilience'], nodeI
 stop()
 ```
 
-For the queue side, `bindRelayReEmitter` / `getActiveReEmitter` expose the process re-emitter the job uses, for worker-only processes that forward nothing but must still re-emit. See the source for the full surface.
+### `DiagnosticsRedisRelayOptions`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `pub` | `RedisLike` | — | Publisher connection. Required. |
+| `sub` | `RedisLike` | — | Subscriber connection, **separate** from `pub` (a subscribed client can't publish). For ioredis: `const sub = pub.duplicate()`. Required. |
+| `libs` | `string[]` | — | Forward every event of these libs, current and future channels. |
+| `channels` | `ChannelRef[]` | — | Forward these exact `{ lib, event }` pairs, in addition to `libs`. |
+| `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
+| `redisChannel` | `string` | `agora:diagnostics:relay` | The Redis channel to relay on. Every process that should see each other's events must agree on it. |
+| `nodeId` | `string` | random | Id stamped on outgoing messages; incoming messages carrying it are dropped as this process's own echo. |
+
+Neither connection is closed by `stop()` — the relay only unsubscribes and detaches its message listener, because it opened neither. Closing is the caller's job, which is exactly what the `transports.redis` factory does for the `duplicate()` it created.
+
+`pub`/`sub` are typed structurally, so you are not tied to ioredis. Anything with these five methods works, including a fake in a test:
+
+```ts
+interface RedisLike {
+  publish(channel: string, message: string): unknown
+  subscribe(channel: string, callback?: (err: Error | null, count: number) => void): unknown
+  on(event: 'message', listener: (channel: string, message: string) => void): unknown
+  removeListener(event: 'message', listener: (channel: string, message: string) => void): unknown
+  unsubscribe(channel: string): unknown
+}
+```
+
+### `DiagnosticsQueueRelayOptions`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `job` | `DiagnosticsEventJobLike` | — | The job used to forward events; its `dispatch(envelope)` is called once per selected event. Required. |
+| `libs` | `string[]` | — | Forward every event of these libs, current and future channels. |
+| `channels` | `ChannelRef[]` | — | Forward these exact `{ lib, event }` pairs, in addition to `libs`. |
+| `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
+| `nodeId` | `string` | random | Id stamped onto every dispatched envelope; envelopes carrying it are dropped as this process's own echo. |
+| `onDispatchError` | `(error: unknown) => void` | ignored | Called when `dispatch` throws or rejects. See [When dispatching fails](#when-dispatching-fails). |
+
+`job` is structural too — anything whose `dispatch(payload)` returns a promise (or nothing) satisfies it, which is what makes the relay testable without a queue backend:
+
+```ts
+interface DiagnosticsEventJobLike {
+  dispatch(payload: DiagnosticsEventEnvelope): PromiseLike<unknown> | unknown
+}
+
+const dispatched: DiagnosticsEventEnvelope[] = []
+const stop = createDiagnosticsQueueRelay({
+  job: { dispatch: (payload) => dispatched.push(payload) },
+  all: true,
+  nodeId: 'test-node',
+})
+
+emit('billing', 'invoice-paid', { invoiceId: 'inv_123' })
+
+stop()
+expect(dispatched[0].node).toBe('test-node')
+expect(dispatched[0].env.event).toBe('invoice-paid')
+```
+
+Starting the relay also binds the process re-emitter, and `stop()` unbinds it — which is why a process running a relay receives relayed events with no extra wiring, and a process that never starts one [drops them](#worker-only-processes).

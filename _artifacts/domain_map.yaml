@@ -1,0 +1,102 @@
+# Domain map for @adonis-agora/diagnostics (TanStack Intent agent skills)
+# Produced autonomously (no maintainer interview — fully-autonomous constraint).
+# Grounded in README.md, DESIGN.md, docs/*.mdx, packages/core/src, and the published stubs.
+# Single-package library → minimal-library fast path: flat structure, no router.
+
+library: adonis-diagnostics
+description: >-
+  A zero-runtime-dependency observability bus for AdonisJS over Node's built-in
+  node:diagnostics_channel. Libraries emit POINT events (emit) or SPANs
+  (trace/tracingChannel) on agora:<lib>:<event> channels; anything may observe via
+  onDiagnostic, a custom diagnostics_channel subscriber, the OpenTelemetry bridge,
+  or cross-process Redis / @adonisjs/queue transports selected in config/diagnostics.ts.
+  Emitting is free when unobserved (hasSubscribers gate) and never throws.
+
+# Version read from packages/core/package.json at scaffolding time.
+versions:
+  "@adonis-agora/diagnostics": "0.2.6"
+
+# The only client-facing package. Skills are co-located in packages/core/skills/.
+primary_packages:
+  - name: "@adonis-agora/diagnostics"
+    dir: packages/core
+    role: Core + only package — emit/trace/onDiagnostic over node:diagnostics_channel,
+      typed ChannelRegistry/CapabilityRegistry augmentation, claim registry, the
+      OpenTelemetry auto-bridge (/otel subpath), and the in-core cross-process
+      transports (Redis pub/sub and @adonisjs/queue) chosen in config/diagnostics.ts.
+
+secondary_packages: []
+
+domains:
+  - id: emit_observe
+    title: Emitting events & observing them
+    package: "@adonis-agora/diagnostics"
+    surface:
+      - "emit(lib, event, payload, opts?) — opts: traceId, sample, durationMs"
+      - "trace(lib, event, fn, payload?, opts?) / tracingChannel(lib, event)"
+      - five span sub-channels start/end/asyncStart/asyncEnd/error under agora:<lib>:<event>:<phase>
+      - "onDiagnostic(lib, event?, handler, { onError? }) → unsubscribe; unsubscribeAll()"
+      - "channelName / traceChannelNames / parseChannelName / getChannel"
+      - registeredChannels / registerChannel / onChannelRegistered / resetRegistry (test-only)
+    key_facts:
+      - Envelope is built ONLY when channel.hasSubscribers; emit never throws.
+      - trace gates on ANY of the five sub-channels; one spanId pairs all phases;
+        fn's return value or thrown error propagates unchanged to the caller.
+      - Handlers run inline on the emitting call; heavy work must be handed off.
+      - Wildcard onDiagnostic auto-subscribes channels registered later; the provider
+        calls unsubscribeAll() on shutdown so dev watcher/test reloads don't leak listeners.
+
+  - id: typing_contracts
+    title: Typed payloads, capability slots, claims
+    package: "@adonis-agora/diagnostics"
+    surface:
+      - ChannelRegistry / CapabilityRegistry augmentation via declare module
+      - LibOf / EventOf / PayloadOf / CapabilityOf type helpers
+      - capability(lib, name) → Symbol.for('@agora/<lib>:<name>'); assertCapabilityNaming
+      - EMIT_SLOT / TRACE_SLOT globalThis republish slots
+      - claimDiagnostics(lib, events) → release; isDiagnosticClaimed(lib, event)
+      - setContextAccessor / getContextAccessor / resolveTraceId / CONTEXT_ACCESSOR
+    key_facts:
+      - Registries are purely type-level; the untyped unknown path stays open because
+        LibOf/EventOf add `string & {}` so unions never close.
+      - Claims are reference-counted, checked at RECORD time by the generic bridge
+        (order-independent), released by an idempotent release().
+      - traceId auto-fill comes from @adonis-agora/context soft-registering its accessor;
+        explicit opts.traceId wins. resolveTraceId() never throws.
+      - Cross-copy sharing works because state lives behind Symbol.for slots on globalThis.
+
+  - id: cross_process_otel
+    title: Cross-process fan-out & OpenTelemetry export
+    package: "@adonis-agora/diagnostics"
+    surface:
+      - defineConfig({ otel, default, forward, nodeId, transports })
+      - "transports.redis({ connection, redisChannel }) / transports.queue({ queue })"
+      - "forward ChannelSelection: { libs } | { channels } | { all }"
+      - createDiagnosticsRedisRelay / createDiagnosticsQueueRelay (framework-agnostic)
+      - createChannelSelector(selection, forward); bindRelayReEmitter / getActiveReEmitter
+      - "@adonis-agora/diagnostics/otel — start/stop, DiagnosticsOtelBridge, BridgeOptions
+        (tracerName, recordPointEvents, maxOpenSpans, recordClaimed), otelTraceparent"
+    key_facts:
+      - Local-only until config.default names a transport; an unknown default name throws at boot.
+      - Driver peers (@adonisjs/redis + ioredis, @adonisjs/queue) import lazily inside the thunk.
+      - Echo suppression by nodeId + re-emit guard stop loops; queue relay failures route to
+        onDispatchError (wired to the app logger), never into emit().
+      - A worker must ALSO select the transport to bind a re-emitter; otherwise relayed jobs
+        succeed as silent no-ops. Gate `forward` per env, never `default`.
+      - The OTel bridge starts automatically when @opentelemetry/api resolves; otel:false opts out.
+        It skips claimed lib:event keys unless recordClaimed:true.
+
+gaps:
+  # What a maintainer interview would have answered but could not be confirmed autonomously.
+  - No GitHub issues/discussions were mined this session (gh access not verified), so the
+    real-world frequency ranking of failure modes is inferred from source comments and docs
+    callouts rather than observed reports. The worker-transport trap and the queue:work flag
+    mistake are called out as "number-one reason" in the docs themselves, which is strong signal.
+  - Whether the OTel bridge's post-hoc parenting (spans attach under whatever OTel span is
+    active, not agora-under-agora nesting) confuses agents in practice is documented as an
+    honest limitation in DESIGN.md but unconfirmed against user reports.
+  - Priority between the Redis transport and the queue transport for new users is unknown;
+    docs describe trade-offs but no guidance on which to recommend first.
+  - The raw no-dependency conventions (claims map, emit/trace slots) are documented for
+    ecosystem authors; how often third parties replicate them without importing the package
+    could not be measured.

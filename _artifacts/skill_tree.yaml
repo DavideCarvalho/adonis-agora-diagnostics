@@ -1,0 +1,28 @@
+# Skill tree for @adonis-agora/diagnostics. Single-package library → minimal-library
+# fast path: flat structure (skills/<name>/SKILL.md), no router, every skill type `core`.
+# Each entry carries its owning `package`.
+
+structure: flat
+router: false
+
+skills:
+  - name: diagnostics-setup
+    type: core
+    package: "@adonis-agora/diagnostics"
+    path: packages/core/skills/diagnostics-setup/SKILL.md
+    summary: Configure the provider, emit POINT events (durationMs/sample), trace spans,
+      observe with onDiagnostic, and assert events in tests.
+
+  - name: diagnostics-typed-payloads
+    type: core
+    package: "@adonis-agora/diagnostics"
+    path: packages/core/skills/diagnostics-typed-payloads/SKILL.md
+    summary: ChannelRegistry/CapabilityRegistry augmentation, PayloadOf/CapabilityOf,
+      capability slots, claimDiagnostics dedup, setContextAccessor traceId auto-fill.
+
+  - name: diagnostics-transports-otel
+    type: core
+    package: "@adonis-agora/diagnostics"
+    path: packages/core/skills/diagnostics-transports-otel/SKILL.md
+    summary: defineConfig + transports.redis/queue, forward selection, worker-only
+      processes, custom transports, and the /otel bridge (recordClaimed, otelTraceparent).

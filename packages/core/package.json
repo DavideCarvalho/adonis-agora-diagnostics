@@ -34,7 +34,7 @@
       "default": "./dist/src/otel/index.js"
     }
   },
-  "files": ["dist/", "README.md", "CHANGELOG.md"],
+  "files": ["dist/", "README.md", "CHANGELOG.md", "skills"],
   "//sideEffects": "NOT false: registry.ts, context_accessor.ts and subscriber.ts install Symbol.for() global slots AT IMPORT TIME (cross-copy-stable channel registry / accessor / subscription set); channel.ts and trace.ts register onRegistryReset hooks at load. A bundler told sideEffects:false could tree-shake these initializers and break cross-copy discovery. Pure modules (index, types) stay tree-shakeable.",
   "sideEffects": [
     "**/registry.js",
@@ -85,6 +85,7 @@
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "1.30.1",
     "@opentelemetry/sdk-trace-base": "1.30.1",
+    "@tanstack/intent": "^0.3.2",
     "@types/node": "20.19.43",
     "ioredis": "5.11.1",
     "typescript": "5.9.3",
@@ -101,6 +102,7 @@
     "diagnostics-channel",
     "observability",
     "telescope",
-    "agora"
+    "agora",
+    "tanstack-intent"
   ]
 }

@@ -89,7 +89,7 @@
     "@types/node": "20.19.43",
     "ioredis": "5.11.1",
     "typescript": "5.9.3",
-    "vitest": "3.2.7",
+    "vitest": "4.1.11",
     "@opentelemetry/context-async-hooks": "1.30.1"
   },
   "engines": {

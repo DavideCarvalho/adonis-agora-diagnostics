@@ -88,7 +88,7 @@
     "@tanstack/intent": "^0.3.2",
     "@types/node": "20.19.43",
     "ioredis": "5.11.1",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "vitest": "3.2.7",
     "@opentelemetry/context-async-hooks": "1.30.1"
   },

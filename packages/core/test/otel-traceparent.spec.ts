@@ -1,18 +1,18 @@
 import {
   type Context,
   type ContextManager,
-  ROOT_CONTEXT,
   context,
   propagation,
+  ROOT_CONTEXT,
   trace,
 } from '@opentelemetry/api';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  TRACEPARENT_SLOT,
   clearTraceparentSlot,
   otelTraceparent,
   publishTraceparentSlot,
+  TRACEPARENT_SLOT,
 } from '../src/otel/traceparent.js';
 
 /** Minimal synchronous context manager so `context.with` is observable. */

@@ -30,10 +30,10 @@ export function defineConfig(config: DiagnosticsConfig): DiagnosticsConfig {
   return config;
 }
 
-export { transports };
 export type {
   QueueTransportConfig,
   RedisTransportConfig,
   TransportContext,
   TransportProvider,
 } from './transports/factory.js';
+export { transports };

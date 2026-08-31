@@ -56,7 +56,9 @@ describe('createDiagnosticsQueueRelay', () => {
     deliverToWorker({ node: 'OTHER', env });
 
     expect(local).toHaveBeenCalledTimes(1);
-    expect((local.mock.calls[0]?.[0] as DiagnosticEvent).payload).toEqual({ key: 'x' });
+    expect((local.mock.calls[0]?.[0] as DiagnosticEvent | undefined)?.payload).toEqual({
+      key: 'x',
+    });
   });
 
   it('suppresses its own echo (node === nodeId)', () => {
@@ -156,7 +158,7 @@ describe('createDiagnosticsQueueRelay', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(onDispatchError).toHaveBeenCalledTimes(1);
-    expect((onDispatchError.mock.calls[0]?.[0] as Error).message).toBe('queue down');
+    expect((onDispatchError.mock.calls[0]?.[0] as Error | undefined)?.message).toBe('queue down');
   });
 
   it('stops forwarding and re-emitting after teardown', () => {

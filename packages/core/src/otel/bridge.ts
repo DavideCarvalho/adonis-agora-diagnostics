@@ -1,11 +1,11 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import {
-  type AttributeValue,
   type Attributes,
+  type AttributeValue,
+  context,
   type Span,
   SpanStatusCode,
   type Tracer,
-  context,
   trace,
 } from '@opentelemetry/api';
 import { isDiagnosticClaimed } from '../claims.js';

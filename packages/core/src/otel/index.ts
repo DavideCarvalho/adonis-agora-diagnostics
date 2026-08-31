@@ -1,7 +1,7 @@
 import { type BridgeOptions, DiagnosticsOtelBridge } from './bridge.js';
 
-export { DiagnosticsOtelBridge } from './bridge.js';
 export type { BridgeOptions } from './bridge.js';
+export { DiagnosticsOtelBridge } from './bridge.js';
 export {
   clearTraceparentSlot,
   otelTraceparent,

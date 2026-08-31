@@ -1,6 +1,6 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SCHEMA_VERSION, channelName, emit, getChannel } from '../src/channel.js';
+import { channelName, emit, getChannel, SCHEMA_VERSION } from '../src/channel.js';
 import { setContextAccessor } from '../src/context_accessor.js';
 import { registeredChannels, resetRegistry } from '../src/registry.js';
 import type { DiagnosticEvent } from '../src/types.js';

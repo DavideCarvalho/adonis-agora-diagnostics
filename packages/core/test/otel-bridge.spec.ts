@@ -1,4 +1,4 @@
-import { SpanStatusCode, context, trace as otelTrace } from '@opentelemetry/api';
+import { context, trace as otelTrace, SpanStatusCode } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import {
   BasicTracerProvider,
@@ -18,7 +18,7 @@ beforeAll(() => {
   provider = new BasicTracerProvider({
     spanProcessors: [new SimpleSpanProcessor(exporter)],
   });
-  provider.register();
+  otelTrace.setGlobalTracerProvider(provider);
   // The bridge is a post-hoc observer: it parents spans on / attaches POINT
   // events to the AMBIENT active OTel span (e.g. the @adonisjs/otel request
   // span). That requires a context manager so context.active() is meaningful.
@@ -28,6 +28,8 @@ beforeAll(() => {
 
 afterAll(async () => {
   contextManager.disable();
+  otelTrace.disable();
+  context.disable();
   await provider.shutdown();
 });
 
@@ -130,7 +132,7 @@ describe('DiagnosticsOtelBridge — spans from trace()', () => {
 
     const inner = spanByName('agora.billing.charge');
     expect(inner).toBeDefined();
-    expect(inner?.parentSpanId).toBe(parent.spanContext().spanId);
+    expect(inner?.parentSpanContext?.spanId).toBe(parent.spanContext().spanId);
   });
 });
 

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertCapabilityNaming,
   CONTEXT_ACCESSOR,
+  capability,
   EMIT_SLOT,
   TRACE_SLOT,
-  assertCapabilityNaming,
-  capability,
 } from '../src/index.js';
 import { TRACEPARENT_SLOT } from '../src/otel/traceparent.js';
 

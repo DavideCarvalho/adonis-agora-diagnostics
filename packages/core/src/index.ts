@@ -1,6 +1,8 @@
 /** Keep in sync with this package's `version` in package.json. */
 export const VERSION = '0.2.7';
 
+// Re-export the configure hook from the package root so `node ace configure` finds it
+export { configure } from '../configure.js';
 export {
   type CapabilityOf,
   type CapabilityRegistry,
@@ -9,22 +11,13 @@ export {
 export {
   CHANNEL_PREFIX,
   channelName,
-  emit,
   EMIT_SLOT,
+  emit,
   getChannel,
   SCHEMA_VERSION,
 } from './channel.js';
 export { claimDiagnostics, isDiagnosticClaimed } from './claims.js';
 export { assertCapabilityNaming } from './conformance.js';
-export {
-  type DiagnosticsConfig,
-  defineConfig,
-  type QueueTransportConfig,
-  type RedisTransportConfig,
-  type TransportContext,
-  type TransportProvider,
-  transports,
-} from './define_config.js';
 export {
   CONTEXT_ACCESSOR,
   type ContextAccessor,
@@ -34,6 +27,15 @@ export {
   setContextAccessor,
   type UserRef,
 } from './context_accessor.js';
+export {
+  type DiagnosticsConfig,
+  defineConfig,
+  type QueueTransportConfig,
+  type RedisTransportConfig,
+  type TransportContext,
+  type TransportProvider,
+  transports,
+} from './define_config.js';
 export {
   onChannelRegistered,
   registerChannel,
@@ -49,24 +51,19 @@ export {
 } from './relay.js';
 export {
   type DiagnosticHandler,
-  onDiagnostic,
   type OnDiagnosticOptions,
+  onDiagnostic,
   unsubscribeAll,
 } from './subscriber.js';
 export {
   SPAN_SCHEMA_VERSION,
-  trace,
   TRACE_SLOT,
   type TraceChannelNames,
-  traceChannelNames,
   type TracingChannel,
+  trace,
+  traceChannelNames,
   tracingChannel,
 } from './trace.js';
-export {
-  createDiagnosticsRedisRelay,
-  type DiagnosticsRedisRelayOptions,
-  type RedisLike,
-} from './transports/redis.js';
 export {
   bindRelayReEmitter,
   createDiagnosticsQueueRelay,
@@ -76,6 +73,11 @@ export {
   getActiveReEmitter,
   type RelayReEmitter,
 } from './transports/queue.js';
+export {
+  createDiagnosticsRedisRelay,
+  type DiagnosticsRedisRelayOptions,
+  type RedisLike,
+} from './transports/redis.js';
 export type {
   ChannelRegistry,
   DiagnosticEvent,
@@ -87,6 +89,3 @@ export type {
   SpanPhase,
   TraceOptions,
 } from './types.js';
-
-// Re-export the configure hook from the package root so `node ace configure` finds it
-export { configure } from '../configure.js';

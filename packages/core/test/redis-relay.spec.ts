@@ -69,7 +69,9 @@ describe('createDiagnosticsRedisRelay', () => {
     remote.publish(RELAY_CHANNEL, JSON.stringify({ node: 'OTHER', env }));
 
     expect(local).toHaveBeenCalledTimes(1);
-    expect((local.mock.calls[0]?.[0] as DiagnosticEvent).payload).toEqual({ key: 'x' });
+    expect((local.mock.calls[0]?.[0] as DiagnosticEvent | undefined)?.payload).toEqual({
+      key: 'x',
+    });
   });
 
   it('suppresses its own echo (node === nodeId)', () => {

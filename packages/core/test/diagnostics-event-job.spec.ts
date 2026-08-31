@@ -48,7 +48,9 @@ describe('DiagnosticsEventJob', () => {
     await runJob({ node: 'OTHER', env });
 
     expect(local).toHaveBeenCalledTimes(1);
-    expect((local.mock.calls[0]?.[0] as DiagnosticEvent).payload).toEqual({ allow: true });
+    expect((local.mock.calls[0]?.[0] as DiagnosticEvent | undefined)?.payload).toEqual({
+      allow: true,
+    });
   });
 
   it('is a no-op (does not throw) when no relay is bound in the process', async () => {

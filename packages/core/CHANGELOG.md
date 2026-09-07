@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.2.9
+
+### Patch Changes
+
+- [#28](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/28) [`8f7431c`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/8f7431cc75df6481c45ca59da14e928a4b73c4f3) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Accept `@adonisjs/redis` 11 as a peer too (`^9.2 || ^10 || ^11`) for the redis transport. Nothing narrows; the suite runs against the new major.
+
 ## 0.2.8
 
 ### Patch Changes

@@ -83,7 +83,7 @@
     }
   },
   "devDependencies": {
-    "@adonisjs/assembler": "8.5.0",
+    "@adonisjs/assembler": "8.5.1",
     "@adonisjs/core": "7.5.0",
     "@adonisjs/queue": "0.6.2",
     "@adonisjs/redis": "11.0.0",

@@ -91,7 +91,7 @@
     "@opentelemetry/context-async-hooks": "2.11.0",
     "@opentelemetry/core": "2.11.0",
     "@opentelemetry/sdk-trace-base": "2.11.0",
-    "@tanstack/intent": "^0.4.0",
+    "@tanstack/intent": "0.4.0",
     "@types/node": "26.5.1",
     "ioredis": "6.0.0",
     "typescript": "7.0.2",

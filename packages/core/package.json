@@ -8,6 +8,20 @@
     "url": "git+https://github.com/DavideCarvalho/adonis-agora-diagnostics.git",
     "directory": "packages/core"
   },
+  "homepage": "https://davidecarvalho.github.io/agora/docs/diagnostics",
+  "bugs": {
+    "url": "https://github.com/DavideCarvalho/adonis-agora-diagnostics/issues"
+  },
+  "keywords": [
+    "adonisjs",
+    "adonis",
+    "diagnostics",
+    "diagnostics-channel",
+    "observability",
+    "telescope",
+    "agora",
+    "tanstack-intent"
+  ],
   "author": "Davi Carvalho <davi@goflip.ai>",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -99,15 +113,5 @@
   },
   "engines": {
     "node": ">=20.6.0"
-  },
-  "keywords": [
-    "adonisjs",
-    "adonis",
-    "diagnostics",
-    "diagnostics-channel",
-    "observability",
-    "telescope",
-    "agora",
-    "tanstack-intent"
-  ]
+  }
 }

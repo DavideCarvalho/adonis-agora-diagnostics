@@ -60,9 +60,9 @@ export function onDiagnostic(
   opts?: OnDiagnosticOptions,
 ): () => void;
 /**
- * Subscribe a handler to diagnostics events — the framework-agnostic heart of
- * what the NestJS `@OnDiagnostic` explorer did, usable anywhere (HTTP, queue
- * workers, ace commands).
+ * Subscribe a handler to diagnostics events. Reads `node:diagnostics_channel`
+ * directly and touches no framework state, so it works in any process — HTTP,
+ * queue workers, ace commands.
  *
  * - `onDiagnostic('resilience', 'circuit-opened', fn)` — the exact channel.
  * - `onDiagnostic('resilience', fn)` — every `agora:resilience:*` channel,

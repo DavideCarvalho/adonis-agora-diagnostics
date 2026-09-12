@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.2.10
+
+### Patch Changes
+
+- [`d6aa185`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/d6aa185b8ad45bf366078358e4903a9fc788475d) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Describe `onDiagnostic` by what it does today instead of by a sibling framework's decorator.
+
 ## 0.2.9
 
 ### Patch Changes

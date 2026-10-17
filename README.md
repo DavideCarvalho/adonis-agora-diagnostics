@@ -1,5 +1,7 @@
 # `@adonis-agora/diagnostics`
 
+[![npm version](https://img.shields.io/npm/v/@adonis-agora/diagnostics)](https://www.npmjs.com/package/@adonis-agora/diagnostics) [![npm downloads](https://img.shields.io/npm/dm/@adonis-agora/diagnostics)](https://www.npmjs.com/package/@adonis-agora/diagnostics) [![CI](https://github.com/DavideCarvalho/adonis-agora-diagnostics/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DavideCarvalho/adonis-agora-diagnostics/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/@adonis-agora/diagnostics)](https://www.npmjs.com/package/@adonis-agora/diagnostics)
+
 > A standard convention for **Agora** AdonisJS libs to emit observability events
 > over [`node:diagnostics_channel`](https://nodejs.org/api/diagnostics_channel.html)
 > — recorded by a single generic Telescope watcher, with zero coupling between
@@ -49,7 +51,7 @@ onDiagnostic('authz', 'decision', (event) => audit(event)) // one exact channel
 
 | Package | What |
 |---|---|
-| [`@adonis-agora/diagnostics`](./packages/core) | emit / trace / onDiagnostic over `node:diagnostics_channel`, plus the OpenTelemetry bridge and the cross-process Redis / `@adonisjs/queue` transports (selected in `config/diagnostics.ts`) |
+| [`@adonis-agora/diagnostics`](./packages/core) [![npm](https://img.shields.io/npm/v/@adonis-agora/diagnostics)](https://www.npmjs.com/package/@adonis-agora/diagnostics) | emit / trace / onDiagnostic over `node:diagnostics_channel`, plus the OpenTelemetry bridge and the cross-process Redis / `@adonisjs/queue` transports (selected in `config/diagnostics.ts`) |
 
 ## The Agora ecosystem
 

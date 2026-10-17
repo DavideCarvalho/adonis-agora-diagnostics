@@ -59,6 +59,11 @@ AdonisJS port of the [aviary](https://github.com/DavideCarvalho) NestJS ecosyste
 Built on [`@adonis-agora/context`](https://github.com/DavideCarvalho/adonis-context) for
 trace correlation; recorded by `@adonis-agora/telescope`.
 
+## Sponsors
+
+Every Agora library is MIT and stays free. The work is funded by partners and
+sponsors — [become one](https://davidecarvalho.github.io/agora/partners).
+
 ## License
 
 MIT © Davi Carvalho

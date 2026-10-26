@@ -1,4 +1,4 @@
-import type { RedisLike } from '../src/transports/redis.js';
+import type { RedisLike, RedisPipelineLike } from '../src/transports/redis.js';
 
 /** Shared in-memory pub/sub hub. FakeRedis clients on the same hub deliver to each other
  *  synchronously — simulating separate processes/connections in tests. */
@@ -13,6 +13,8 @@ export class FakeRedis implements RedisLike {
   private readonly channels = new Set<string>();
   private readonly listeners = new Set<(channel: string, message: string) => void>();
   public publishCount = 0;
+  /** Number of pipelines executed — each one is a single round trip carrying several publishes. */
+  public pipelineExecCount = 0;
 
   constructor(private readonly hub: FakeHub) {
     hub.clients.add(this);
@@ -22,6 +24,21 @@ export class FakeRedis implements RedisLike {
     this.publishCount += 1;
     this.hub.publish(channel, message);
     return 1;
+  }
+  pipeline(): RedisPipelineLike {
+    const queued: Array<[string, string]> = [];
+    const pipeline: RedisPipelineLike = {
+      publish: (channel, message) => {
+        queued.push([channel, message]);
+        return pipeline;
+      },
+      exec: () => {
+        this.pipelineExecCount += 1;
+        for (const [channel, message] of queued) this.hub.publish(channel, message);
+        return Promise.resolve(queued.map(() => [null, 1]));
+      },
+    };
+    return pipeline;
   }
   subscribe(channel: string, callback?: (err: Error | null, count: number) => void): void {
     this.channels.add(channel);

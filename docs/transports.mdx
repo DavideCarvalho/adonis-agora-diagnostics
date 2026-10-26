@@ -93,9 +93,18 @@ Declaring a transport costs nothing: the factories return a lazy thunk, and the 
 
 Both transports share the same selection engine (`createChannelSelector`) and the same loop-guard design — they differ only in how a selected event leaves the process.
 
+### Forwarding cost on the emitter
+
+Neither built-in transport does I/O inside `emit()`. A selected event is pushed onto an in-memory queue, and the queue is drained once per event loop turn (`setImmediate`), in emit order across all channels. That drain is where events are serialized and sent, as one batch per turn: one Redis pipeline, or one `dispatchMany` call to the queue. Each event is still its own message or job on the wire.
+
+Two consequences:
+
+- The payload is serialized when the turn ends, not when `emit()` is called. A payload object the emitter mutates synchronously after `emit()` goes out with its state at flush time, which is also the state in-process subscribers holding the same reference see.
+- Stopping the relay sends whatever is still queued, synchronously, before it unsubscribes. Graceful shutdown doesn't lose the last turn's events.
+
 ## The Redis transport
 
-`transports.redis(config)` relays over [`@adonisjs/redis`](https://docs.adonisjs.com/guides/digging-deeper/redis) pub/sub. A forwarded event is published to a Redis channel; every other process subscribed to that channel re-emits it onto its local bus. Echoes are suppressed by `nodeId`, and a re-emit guard stops a re-emitted event from being forwarded back — so events never loop.
+`transports.redis(config)` relays over [`@adonisjs/redis`](https://docs.adonisjs.com/guides/digging-deeper/redis) pub/sub. A forwarded event is published to a Redis channel; every other process subscribed to that channel re-emits it onto its local bus. Echoes are suppressed by `nodeId`, and a re-emit guard stops a re-emitted event from being forwarded back — so events never loop. The events of one turn go out as a single ioredis pipeline, one `{ node, env }` message per event. A payload that can't be serialized (a circular reference) drops only that event.
 
 ```ts
 transports.redis({
@@ -133,11 +142,11 @@ A worker must be running to receive forwarded events. `queue` is a **flag** on `
 node ace queue:work --queue=diagnostics
 ```
 
-A process that starts this transport can run the worker for it as-is: the job is resolvable there by its name, `agora.diagnostics.event`, whether or not your `locations` glob covers the package. Forwarding is fire-and-forget: a queue outage is reported, never thrown into `emit()`.
+A process that starts this transport can run the worker for it as-is: the job is resolvable there by its name, `agora.diagnostics.event`, whether or not your `locations` glob covers the package. Forwarding is fire-and-forget: a queue outage is reported, never thrown into `emit()`. The events of one turn are pushed with a single `DiagnosticsEventJob.dispatchMany(...)` (on the configured `queue`), which still creates one job per event; a turn with a single event uses `dispatch`.
 
 ### When dispatching fails
 
-`job.dispatch(...)` reaches a network backend, so it can reject. The relay never lets that reach the `emit()` that triggered it — the rejection is routed to `onDispatchError` instead. Through `transports.queue(...)` it is already wired to the application logger:
+`job.dispatch(...)` and `job.dispatchMany(...)` reach a network backend, so they can reject. The relay never lets that reach the `emit()` that triggered it — the rejection is routed to `onDispatchError` instead, once per failed call, so a failed `dispatchMany` is reported once for its whole batch. A hook that throws is contained too. Through `transports.queue(...)` it is already wired to the application logger:
 
 ```
 [error] failed to relay diagnostics event to queue
@@ -311,12 +320,12 @@ export default defineConfig({
 `createChannelSelector(selection, forward)` is the same engine both built-in transports use. It subscribes `forward` to every channel matched by the selection — the exact `channels`, every channel of the wildcard `libs`, or all of them — including channels registered **after** the relay started, so a lib whose first event fires an hour into the process is picked up automatically. Each channel is subscribed at most once, and `selector.stop()` removes every subscription plus the future-registration listener.
 
 <Callout type="warn" title="Never throw out of forward()">
-`forward` runs **inline** inside the `emit()` that produced the event. A throw there would surface in unrelated application code, and a slow call there slows down the emitting request. Catch everything, and keep the send non-blocking.
+`forward` runs **inline** inside the `emit()` that produced the event. A throw there would surface in unrelated application code, and a slow call there slows down the emitting request. Catch everything, and keep the send non-blocking. The built-in transports [only queue there](#forwarding-cost-on-the-emitter) and send once per turn.
 </Callout>
 
 ## Advanced: the relays without AdonisJS
 
-The transport factories wrap two framework-agnostic functions, exported for non-Adonis use, tests, or custom wiring. They take the raw collaborators (a Redis client pair, or a job with `dispatch`) and the same selection options. Both return a teardown that removes every local subscription:
+The transport factories wrap two framework-agnostic functions, exported for non-Adonis use, tests, or custom wiring. They take the raw collaborators (a Redis client pair, or a job with `dispatch`) and the same selection options. Both return a teardown that sends any queued events, then removes every local subscription:
 
 ```ts
 import { createDiagnosticsRedisRelay, createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
@@ -338,13 +347,14 @@ stop()
 | `redisChannel` | `string` | `agora:diagnostics:relay` | The Redis channel to relay on. Every process that should see each other's events must agree on it. |
 | `nodeId` | `string` | random | Id stamped on outgoing messages; incoming messages carrying it are dropped as this process's own echo. |
 
-Neither connection is closed by `stop()` — the relay only unsubscribes and detaches its message listener, because it opened neither. Closing is the caller's job, which is exactly what the `transports.redis` factory does for the `duplicate()` it created.
+Neither connection is closed by `stop()` — the relay only flushes, unsubscribes and detaches its message listener, because it opened neither. Closing is the caller's job, which is exactly what the `transports.redis` factory does for the `duplicate()` it created.
 
-`pub`/`sub` are typed structurally, so you are not tied to ioredis. Anything with these five methods works, including a fake in a test:
+`pub`/`sub` are typed structurally, so you are not tied to ioredis. Anything with these five methods works, including a fake in a test. `pipeline()` is optional: ioredis has it, and with it a turn's events go out as one pipeline. A client without it gets one `publish` per event in the same drain.
 
 ```ts
 interface RedisLike {
   publish(channel: string, message: string): unknown
+  pipeline?(): { publish(channel: string, message: string): unknown; exec(): unknown }
   subscribe(channel: string, callback?: (err: Error | null, count: number) => void): unknown
   on(event: 'message', listener: (channel: string, message: string) => void): unknown
   removeListener(event: 'message', listener: (channel: string, message: string) => void): unknown
@@ -356,18 +366,19 @@ interface RedisLike {
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `job` | `DiagnosticsEventJobLike` | — | The job used to forward events; its `dispatch(envelope)` is called once per selected event. Required. |
+| `job` | `DiagnosticsEventJobLike` | — | The job used to forward events. Each turn's events go to `dispatchMany(envelopes)` when the job has it, else to `dispatch(envelope)` one by one. Required. |
 | `libs` | `string[]` | — | Forward every event of these libs, current and future channels. |
 | `channels` | `ChannelRef[]` | — | Forward these exact `{ lib, event }` pairs, in addition to `libs`. |
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
 | `nodeId` | `string` | random | Id stamped onto every dispatched envelope; envelopes carrying it are dropped as this process's own echo. |
-| `onDispatchError` | `(error: unknown) => void` | ignored | Called when `dispatch` throws or rejects. See [When dispatching fails](#when-dispatching-fails). |
+| `onDispatchError` | `(error: unknown) => void` | ignored | Called when `dispatch` or `dispatchMany` throws or rejects, once per failed call. See [When dispatching fails](#when-dispatching-fails). |
 
-`job` is structural too — anything whose `dispatch(payload)` returns a promise (or nothing) satisfies it, which is what makes the relay testable without a queue backend:
+`job` is structural too — anything whose `dispatch(payload)` returns a promise (or nothing) satisfies it, which is what makes the relay testable without a queue backend. `dispatchMany` is optional; the `@adonisjs/queue` job class has it. Without it, every event in a turn gets its own `dispatch`:
 
 ```ts
 interface DiagnosticsEventJobLike {
   dispatch(payload: DiagnosticsEventEnvelope): PromiseLike<unknown> | unknown
+  dispatchMany?(payloads: DiagnosticsEventEnvelope[]): PromiseLike<unknown> | unknown
 }
 
 const dispatched: DiagnosticsEventEnvelope[] = []
@@ -379,7 +390,7 @@ const stop = createDiagnosticsQueueRelay({
 
 emit('billing', 'invoice-paid', { invoiceId: 'inv_123' })
 
-stop()
+stop() // sends the queued event before unsubscribing
 expect(dispatched[0].node).toBe('test-node')
 expect(dispatched[0].env.event).toBe('invoice-paid')
 ```

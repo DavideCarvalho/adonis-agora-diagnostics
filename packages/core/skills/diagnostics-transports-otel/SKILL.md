@@ -193,8 +193,12 @@ Source: `docs/transports.mdx` § The queue transport, repo history (fixed docs b
 
 ### [HIGH] Throwing (or blocking) inside a transport's `forward()`
 
-`forward` runs inline inside the `emit()` that produced the event. A throw surfaces in
-unrelated application code; a slow send slows the emitting request.
+A custom `forward` passed to `createChannelSelector` runs inline inside the `emit()`
+that produced the event. A throw surfaces in unrelated application code; a slow send
+slows the emitting request. The built-in Redis/queue relays keep that inline piece
+trivial — their `forward` only queues, and serialization/publish/dispatch run once per
+event loop turn (single Redis pipeline / single `dispatchMany`), so a slow backend no
+longer slows the emitter and nothing throws into `emit()`.
 
 ```ts
 // Wrong — unguarded publish propagates into the emitter
@@ -211,7 +215,10 @@ const forward = (msg: unknown) => {
 ```
 
 Mechanism: `createChannelSelector` subscribes `forward` directly on each matched
-channel, so exceptions propagate straight out of `channel.publish`.
+channel, so a custom `forward`'s exceptions propagate straight out of
+`channel.publish`; the built-in relays only `batcher.push` there (`createTurnBatcher`
+in `packages/core/src/relay.ts`) with I/O in the turn drain
+(`packages/core/src/transports/redis.ts`, `packages/core/src/transports/queue.ts`).
 Source: `docs/transports.mdx` § Never throw out of forward(),
 `packages/core/src/relay.ts`
 
@@ -264,7 +271,7 @@ process.on('shutdown', () => {
 })
 ```
 
-Mechanism: `stop()` only unsubscribes and detaches listeners — the relay opened
+Mechanism: `stop()` flushes queued events, then unsubscribes and detaches listeners — the relay opened
 neither connection, so closing is the caller's job.
 Source: `docs/transports.mdx` § The Redis transport /
 § DiagnosticsRedisRelayOptions, `packages/core/src/transports/factory.ts`

@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.3.1
+
+### Patch Changes
+
+- [#120](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/120) [`fddcf50`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/fddcf50464a6ba3bc734dbd3da253653e8de3c20) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Forward relayed events off the emitter's call stack. With a Redis or queue transport enabled, `emit()` no longer serializes, publishes or dispatches synchronously: selected events are queued and, once per event loop turn, sent in emit order — as a single Redis pipeline (one message per event, same wire format) or a single `DiagnosticsEventJob.dispatchMany(...)` (one job per event, same payload). Queued events are sent when the transport is torn down.
+
 ## 0.3.0
 
 ### Minor Changes

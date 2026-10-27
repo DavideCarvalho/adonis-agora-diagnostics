@@ -128,6 +128,10 @@ export const transports = {
           const dispatcher = DiagnosticsEventJob.dispatch(payload);
           return queueName ? dispatcher.toQueue(queueName) : dispatcher;
         },
+        dispatchMany(payloads: DiagnosticsEventEnvelope[]) {
+          const dispatcher = DiagnosticsEventJob.dispatchMany(payloads);
+          return queueName ? dispatcher.toQueue(queueName) : dispatcher;
+        },
       };
 
       return createDiagnosticsQueueRelay({

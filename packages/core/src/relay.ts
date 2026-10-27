@@ -96,3 +96,39 @@ export function createChannelSelector(
     },
   };
 }
+
+/** A queue drained once per event loop turn. See {@link createTurnBatcher}. */
+export interface TurnBatcher<T> {
+  /** Queue an item; the first push of a turn schedules the drain. */
+  push(item: T): void;
+  /** Drain whatever is queued right now, synchronously. */
+  flush(): void;
+}
+
+/**
+ * Collect items off the caller's stack and hand them to `drain` in arrival order, once per event
+ * loop turn (`setImmediate`). Both relays forward through one of these so `emit()` only enqueues;
+ * serialization and I/O run after the emitter returns, batched per turn. `drain` runs outside any
+ * caller, so it must not throw.
+ */
+export function createTurnBatcher<T>(drain: (items: T[]) => void): TurnBatcher<T> {
+  const pending: T[] = [];
+  let scheduled: ReturnType<typeof setImmediate> | null = null;
+
+  const flush = (): void => {
+    if (scheduled !== null) {
+      clearImmediate(scheduled);
+      scheduled = null;
+    }
+    if (pending.length === 0) return;
+    drain(pending.splice(0));
+  };
+
+  return {
+    push(item) {
+      pending.push(item);
+      scheduled ??= setImmediate(flush);
+    },
+    flush,
+  };
+}

@@ -18,3 +18,14 @@ export class FakeJob implements DiagnosticsEventJobLike {
     return Promise.resolve();
   }
 }
+
+/** A {@link FakeJob} that also supports bulk dispatch, like `Job.dispatchMany`. */
+export class FakeBatchJob extends FakeJob {
+  public readonly batches: DiagnosticsEventEnvelope[][] = [];
+
+  dispatchMany(payloads: DiagnosticsEventEnvelope[]): Promise<void> {
+    this.batches.push(payloads);
+    if (this.rejectWith !== undefined) return Promise.reject(this.rejectWith);
+    return Promise.resolve();
+  }
+}

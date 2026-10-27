@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getChannel } from '../channel.js';
-import { type ChannelRef, createChannelSelector } from '../relay.js';
+import { type ChannelRef, createChannelSelector, createTurnBatcher } from '../relay.js';
 import type { DiagnosticEvent } from '../types.js';
 
 export type { ChannelRef };
@@ -24,6 +24,11 @@ export interface DiagnosticsEventEnvelope {
  */
 export interface DiagnosticsEventJobLike {
   dispatch(payload: DiagnosticsEventEnvelope): PromiseLike<unknown> | unknown;
+  /**
+   * When present, a turn's forwarded events are pushed with one call (still one job per event, e.g.
+   * `Job.dispatchMany`) instead of one `dispatch` each.
+   */
+  dispatchMany?(payloads: DiagnosticsEventEnvelope[]): PromiseLike<unknown> | unknown;
 }
 
 export interface DiagnosticsQueueRelayOptions {
@@ -42,8 +47,9 @@ export interface DiagnosticsQueueRelayOptions {
   /** Unique id for THIS process, for echo suppression. Default a random id. */
   nodeId?: string;
   /**
-   * Invoked if `job.dispatch(...)` rejects asynchronously. Forwarding is fire-and-forget so a queue
-   * outage never throws into `emit()`; this hook lets callers log the failure. Default: ignored.
+   * Invoked if `job.dispatch(...)` / `job.dispatchMany(...)` throws or rejects (once per failed
+   * call). Forwarding is fire-and-forget so a queue outage never throws into `emit()`; this hook
+   * lets callers log the failure. Default: ignored.
    */
   onDispatchError?: (error: unknown) => void;
 }
@@ -120,10 +126,14 @@ export function getActiveReEmitter(): RelayReEmitter | null {
  * back. Forwarding is fire-and-forget and never throws into `emit()`; the job's `execute()` never
  * throws into the worker. Does NOT own the queue lifecycle — `@adonisjs/queue` does.
  *
+ * Forwarding happens off the emitter's call stack: selected events are queued and dispatched once
+ * per event loop turn, in emit order — with a single `job.dispatchMany(...)` when available.
+ *
  * Usually you don't call this directly: `config/diagnostics.ts` selects it via
  * `transports.queue({ ... })` and the provider starts it for you.
  *
- * @returns a teardown that removes all local subscriptions and unbinds the process re-emitter.
+ * @returns a teardown that dispatches any queued events, then removes all local subscriptions and
+ *   unbinds the process re-emitter.
  */
 export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOptions): () => void {
   const { job } = options;
@@ -133,24 +143,44 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
   const guard = new ReEmitGuard(nodeId);
   const unbindReEmitter = bindRelayReEmitter(guard);
 
+  const report = (err: unknown): void => {
+    try {
+      onDispatchError?.(err);
+    } catch {
+      // the hook runs outside any caller — a throwing hook must not become an uncaught exception
+    }
+  };
+
+  // dispatch is async (push to the queue backend) — fire-and-forget, but surface failures
+  const fireAndReport = (dispatch: () => unknown): void => {
+    try {
+      const result = dispatch();
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+        (result as PromiseLike<unknown>).then(undefined, report);
+      }
+    } catch (err) {
+      report(err);
+    }
+  };
+
+  const batcher = createTurnBatcher<DiagnosticsEventEnvelope>((envelopes) => {
+    if (envelopes.length > 1 && typeof job.dispatchMany === 'function') {
+      fireAndReport(() => job.dispatchMany?.(envelopes));
+      return;
+    }
+    for (const envelope of envelopes) fireAndReport(() => job.dispatch(envelope));
+  });
+
   const forward = (msg: unknown): void => {
     if (typeof msg !== 'object' || msg === null) return;
     if (guard.reEmitting.has(msg)) return; // a re-emitted remote event — do not send it back
-    try {
-      const result = job.dispatch({ node: nodeId, env: msg as DiagnosticEvent });
-      // dispatch is async (push to the queue backend) — fire-and-forget, but surface rejections
-      if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-        (result as PromiseLike<unknown>).then(undefined, (err) => onDispatchError?.(err));
-      }
-    } catch (err) {
-      // never throw back into the synchronous emit() that triggered this
-      onDispatchError?.(err);
-    }
+    batcher.push({ node: nodeId, env: msg as DiagnosticEvent });
   };
 
   const selector = createChannelSelector(options, forward);
 
   return () => {
+    batcher.flush();
     selector.stop();
     unbindReEmitter();
   };

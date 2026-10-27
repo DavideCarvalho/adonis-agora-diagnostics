@@ -1,3 +1,4 @@
+import diagnostics_channel from 'node:diagnostics_channel';
 import { context, trace as otelTrace, SpanStatusCode } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import {
@@ -92,6 +93,15 @@ describe('DiagnosticsOtelBridge — spans from trace()', () => {
     expect(spans[0]?.status.code).toBe(SpanStatusCode.OK);
     expect(spans[0]?.attributes['agora.result']).toBe('done');
     expect(bridge.openSpanCount).toBe(0);
+  });
+
+  it('does not subscribe to the asyncStart sub-channel (it records nothing there)', () => {
+    trace('durable', 'probe', () => 1);
+    expect(diagnostics_channel.channel('agora:durable:probe:start').hasSubscribers).toBe(true);
+    expect(diagnostics_channel.channel('agora:durable:probe:asyncEnd').hasSubscribers).toBe(true);
+    expect(diagnostics_channel.channel('agora:durable:probe:asyncStart').hasSubscribers).toBe(
+      false,
+    );
   });
 
   it('produces an ERROR span for an async rejection', async () => {

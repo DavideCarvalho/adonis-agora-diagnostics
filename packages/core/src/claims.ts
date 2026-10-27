@@ -101,5 +101,8 @@ export function claimDiagnostics(lib: string, events: readonly string[]): () => 
  * generic observer, per the contract above.
  */
 export function isDiagnosticClaimed(lib: string, event: string): boolean {
+  // Fast path for the common no-claims case: skip building the key string on
+  // every recorded event/phase.
+  if (claims.size === 0) return false;
   return claims.has(claimKey(lib, event));
 }

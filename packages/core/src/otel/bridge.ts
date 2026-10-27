@@ -164,7 +164,10 @@ export class DiagnosticsOtelBridge {
     const span = (msg: unknown) => this.#onSpan(msg as SpanEvent);
     this.#subscribe(names.start, span);
     this.#subscribe(names.end, span);
-    this.#subscribe(names.asyncStart, span);
+    // `asyncStart` is deliberately NOT subscribed: the bridge records nothing for
+    // it (see #onSpan), and `trace()` only builds + publishes a phase envelope
+    // when that sub-channel has a subscriber. Leaving it unsubscribed saves an
+    // envelope allocation + publish per async traced op whenever OTel is on.
     this.#subscribe(names.asyncEnd, span);
     this.#subscribe(names.error, span);
   }
@@ -182,7 +185,9 @@ export class DiagnosticsOtelBridge {
     if (!this.#recordClaimed && isDiagnosticClaimed(event.lib, event.event)) return;
     try {
       const active = trace.getActiveSpan();
-      if (active === undefined) return;
+      // A non-recording span (no SDK, or the request was sampled out) drops
+      // `addEvent` per the OTel spec — skip flattening the payload for nothing.
+      if (active === undefined || !active.isRecording()) return;
       const attrs: Attributes = {
         'agora.lib': event.lib,
         'agora.event': event.event,
@@ -239,6 +244,10 @@ export class DiagnosticsOtelBridge {
       },
       context.active(),
     );
+    // A non-recording span (no SDK registered, or sampled out) ignores every
+    // later setAttribute/setStatus/end, so there is nothing to close: don't track
+    // it. Keeps the open-span map (and its LRU cap) for spans that are exported.
+    if (!span.isRecording()) return;
     this.#open.set(event.spanId, span);
     this.#enforceCap();
   }

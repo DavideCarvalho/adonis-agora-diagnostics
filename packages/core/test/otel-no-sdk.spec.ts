@@ -31,6 +31,17 @@ describe('bridge with no OTel SDK registered (zero-overhead, no-op)', () => {
     ).toThrow('boom');
   });
 
+  it('does not track no-op (non-recording) spans in the open-span map', () => {
+    const bridge = start();
+    let release: (v: unknown) => void = () => {};
+    const pending = new Promise((r) => {
+      release = r;
+    });
+    void trace('slow', 'op', () => pending);
+    expect(bridge.openSpanCount).toBe(0);
+    release(null);
+  });
+
   it('otelTraceparent() returns undefined with no propagator', () => {
     expect(otelTraceparent()).toBeUndefined();
   });

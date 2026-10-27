@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 0.3.2
+
+### Patch Changes
+
+- [#122](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/122) [`93323b9`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/93323b908af31b2ef137279b291d7c24ddcc511a) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - perf(otel): make the OTel bridge cheaper when spans are not recorded. Non-recording spans (no SDK registered, or sampled out) are no longer tracked in the open-span map, POINT events skip payload flattening when the active span is non-recording, the bridge no longer subscribes to the `asyncStart` sub-channel it never recorded anything for (so `trace()` skips building that envelope), and `isDiagnosticClaimed` short-circuits when nothing is claimed.
+
 ## 0.3.1
 
 ### Patch Changes

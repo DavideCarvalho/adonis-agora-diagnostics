@@ -76,7 +76,7 @@ export const transports = {
   redis(config: RedisTransportConfig = {}): TransportProvider {
     return async (ctx) => {
       const redisService = (await import('@adonisjs/redis/services/main')).default;
-      const { createDiagnosticsRedisRelay } = await import('./redis.js');
+      const { createDiagnosticsRedisRelay, settle } = await import('./redis.js');
 
       const connection = config.connection
         ? redisService.connection(
@@ -99,10 +99,22 @@ export const transports = {
       // here (not tracked by `@adonisjs/redis`), so the relay's own cleanup only
       // unsubscribes it. Close it on teardown too, otherwise the open socket keeps
       // the process alive and graceful shutdown (and test runs) hang forever.
+      // A ready connection gets QUIT, queued after the UNSUBSCRIBE above; one that
+      // is still connecting or reconnecting is disconnected outright so it stops
+      // retrying. Commands left pending then reject, and every one is caught.
       return () => {
         stop();
+        const client = sub as unknown as {
+          status?: string;
+          quit?: () => unknown;
+          disconnect?: () => void;
+        };
         try {
-          (sub as unknown as { disconnect?: () => void }).disconnect?.();
+          if (client.status === 'ready' && typeof client.quit === 'function') {
+            settle(client.quit());
+          } else {
+            client.disconnect?.();
+          }
         } catch {
           // best-effort teardown — never throw out of a shutdown hook
         }

@@ -42,6 +42,21 @@ export interface DiagnosticsRedisRelayOptions {
 const DEFAULT_REDIS_CHANNEL = 'agora:diagnostics:relay';
 
 /**
+ * Swallow the rejection of a fire-and-forget Redis command. ioredis returns a promise from every
+ * command, and one still pending when its connection closes rejects with `Connection is closed.`;
+ * left uncaught, that rejection crashes a short-lived process (an `ace` command) on exit.
+ */
+export function settle(result: unknown): void {
+  if (
+    result !== null &&
+    (typeof result === 'object' || typeof result === 'function') &&
+    typeof (result as { then?: unknown }).then === 'function'
+  ) {
+    (result as PromiseLike<unknown>).then(undefined, () => {});
+  }
+}
+
+/**
  * Relay diagnostics events across processes over Redis pub/sub. Forwards selected local
  * `agora:<lib>:<event>` channels to Redis and re-emits Redis-received events onto the local bus, so
  * `onDiagnostic` handlers / `getChannel(...).subscribe(...)` fire cross-process. Loop-safe via nodeId
@@ -67,7 +82,7 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
 
   const publishOne = (message: string): void => {
     try {
-      pub.publish(redisChannel, message);
+      settle(pub.publish(redisChannel, message));
     } catch {
       // a failing publish drops only its own event
     }
@@ -86,7 +101,7 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
       try {
         const pipeline = pub.pipeline();
         for (const message of messages) pipeline.publish(redisChannel, message);
-        pipeline.exec();
+        settle(pipeline.exec());
       } catch {
         // never throw out of the drain
       }
@@ -124,13 +139,21 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
     }
   };
 
-  sub.subscribe(redisChannel);
   sub.on('message', onMessage);
+  try {
+    settle(sub.subscribe(redisChannel));
+  } catch {
+    // a subscriber that throws synchronously only stops receiving; forwarding still works
+  }
 
   return () => {
     batcher.flush();
     selector.stop();
     sub.removeListener('message', onMessage);
-    sub.unsubscribe(redisChannel);
+    try {
+      settle(sub.unsubscribe(redisChannel));
+    } catch {
+      // never throw out of a teardown
+    }
   };
 }

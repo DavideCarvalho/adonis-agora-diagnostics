@@ -31,8 +31,11 @@ jobs:
 
       - run: pnpm build
 
-  # Lint, typecheck and build run once on the pinned version above; only the test
-  # suite fans out across every Node line we support (24 and 26: maintained by Node and accepted by AdonisJS 7).
+      # publint + arethetypeswrong against every published package, on the built output.
+      - run: pnpm check:package
+
+  # Lint, typecheck, build and the package checks run once on the pinned Node above; only the
+  # test suite fans out across the Node lines we test (24 and 26).
   test:
     runs-on: ubuntu-latest
     strategy:

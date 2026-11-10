@@ -67,6 +67,12 @@ describe('publishable package manifests', () => {
     }
   });
 
+  it('pins engines.node to exactly ">=24" (the 1.0 support floor)', async () => {
+    for (const { path, manifest } of await publishableManifests()) {
+      expect(manifest.engines?.node, path).toBe('>=24');
+    }
+  });
+
   it('rejects the exact-version forms a pinning bot produces', () => {
     for (const pinned of ['v26.7.0', '26.7.0', 'v22.23.2', '22', 'v20.20.2']) {
       expect(isRange(pinned), pinned).toBe(false);

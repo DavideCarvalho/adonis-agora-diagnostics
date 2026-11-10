@@ -6,7 +6,7 @@
 
 Breaking changes:
 
-- Requires Node.js 24 or newer (`engines.node` is `>=24`).
+- Requires Node.js 24 or newer (`engines.node` is `>=24`); tested on Node.js 24 and 26.
 
 Also in this release:
 

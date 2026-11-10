@@ -13,6 +13,13 @@
       "enabled": false
     },
     {
+      "description": "Build and release are pinned to Node 24 (`.nvmrc` and every `node-version:` in the workflows); the CI test matrix covers 24 and 26. A Node major for those pins is a policy change for a person, not a dependency bump.",
+      "matchManagers": ["nvm", "github-actions"],
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "Patch, minor and pin bumps merge on their own once CI is green. These are the ones `release.yml` turns into an automatic patch release. `pin` is its own update type in Renovate rather than a flavour of patch, so it has to be named here or the initial pinning PR sits open forever. Same for `packageManager`, the pnpm version in package.json: it is neither a dependency nor a devDependency, so every pnpm bump used to wait for a person.",
       "matchDepTypes": ["dependencies", "devDependencies", "packageManager"],
       "matchUpdateTypes": ["patch", "minor", "pin"],

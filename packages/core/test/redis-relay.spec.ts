@@ -370,5 +370,34 @@ describe('createDiagnosticsRedisRelay', () => {
         process.off('uncaughtException', uncaught);
       }
     });
+
+    it('swallows publishes and pipelines whose promise rejects (closed connection)', async () => {
+      const hub = new FakeHub();
+      const closed = new FakeRedis(hub);
+      const rejected = () => Promise.reject(new Error('Connection is closed.'));
+      closed.publish = rejected as unknown as FakeRedis['publish'];
+      closed.pipeline = () => ({ publish: () => undefined, exec: rejected });
+      teardowns.push(
+        createDiagnosticsRedisRelay({
+          pub: closed,
+          sub: new FakeRedis(hub),
+          libs: ['resilience'],
+          nodeId: 'A',
+        }),
+      );
+      const unhandled = vi.fn();
+      process.on('unhandledRejection', unhandled);
+      try {
+        emit('resilience', 'circuit-opened', { n: 1 }); // single publish
+        await nextTurn();
+        emit('resilience', 'circuit-opened', { n: 2 }); // pipeline
+        emit('resilience', 'circuit-opened', { n: 3 });
+        await nextTurn();
+        await nextTurn();
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off('unhandledRejection', unhandled);
+      }
+    });
   });
 });

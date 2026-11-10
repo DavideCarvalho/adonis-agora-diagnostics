@@ -17,10 +17,10 @@ name: Check Skills
 on:
   pull_request:
     paths:
-      - 'skills/**'
-      - '**/skills/**'
-      - '_artifacts/**'
-      - '**/_artifacts/**'
+      - "skills/**"
+      - "**/skills/**"
+      - "_artifacts/**"
+      - "**/_artifacts/**"
   release:
     types: [published]
   workflow_dispatch: {}
@@ -41,7 +41,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7.1.0
         with:
-          node-version: 24.22.0
+          node-version: 24.22.2
 
       - name: Install intent
         run: npm install -g @tanstack/intent
@@ -62,7 +62,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7.1.0
         with:
-          node-version: 24.22.0
+          node-version: 24.22.2
 
       - name: Install intent
         run: npm install -g @tanstack/intent

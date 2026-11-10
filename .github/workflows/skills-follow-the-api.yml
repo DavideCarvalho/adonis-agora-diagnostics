@@ -12,7 +12,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - '.changeset/*.md'
+      - ".changeset/*.md"
 
 jobs:
   update-skills:

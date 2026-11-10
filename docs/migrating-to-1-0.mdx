@@ -1,0 +1,58 @@
+---
+title: Migrating to 1.0
+description: Upgrade an app from @adonis-agora/diagnostics 0.x to 1.0.
+icon: ArrowUpCircle
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+1.0 keeps the 0.x API as it is. Every export, config key and channel name works the same way, so most apps only need to bump the package and check their Node version.
+
+## Use Node.js 24 or newer
+
+`@adonis-agora/diagnostics` 1.0 requires Node.js 24 or newer. Update the Node version your app runs on, in your `package.json`, `.nvmrc`, Dockerfile and CI.
+
+Before:
+
+```json title="package.json"
+{
+  "engines": { "node": ">=20.6.0" },
+  "dependencies": {
+    "@adonis-agora/diagnostics": "^0.3.0"
+  }
+}
+```
+
+After:
+
+```json title="package.json"
+{
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "@adonis-agora/diagnostics": "^1.0.0"
+  }
+}
+```
+
+```dockerfile title="Dockerfile"
+FROM node:24-alpine
+```
+
+## `@adonisjs/queue` 0.7 is supported
+
+If you relay diagnostics through the [queue transport](/docs/diagnostics/transports), you can upgrade `@adonisjs/queue` to 0.7. Version 0.6 still works. Your `config/diagnostics.ts` stays the same:
+
+```ts title="config/diagnostics.ts"
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  default: 'queue',
+  transports: {
+    queue: transports.queue(),
+  },
+})
+```
+
+<Callout type="info" title="Mixed versions in one app">
+Libraries that still depend on 0.x and your app on 1.0 can run side by side. Events emitted by either version reach the same `onDiagnostic` handlers, and the Redis and queue transports relay them between processes on different versions.
+</Callout>

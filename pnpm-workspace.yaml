@@ -6,6 +6,6 @@ packages:
 # sob o pnpm 9 (biome/swc/esbuild/better-sqlite3/sharp compilam ou baixam binario), entao
 # liberar preserva o comportamento; nao e permissao nova.
 allowBuilds:
-  '@biomejs/biome': true
-  '@swc/core': true
+  "@biomejs/biome": true
+  "@swc/core": true
   esbuild: true

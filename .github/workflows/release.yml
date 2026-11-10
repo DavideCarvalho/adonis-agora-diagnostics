@@ -45,9 +45,9 @@ jobs:
 
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 24.22.0
+          node-version: 24.22.1
           cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       # Trusted publishing needs npm CLI >= 11.5.1; Node 22 still bundles npm 10.x.
       #
@@ -199,7 +199,7 @@ jobs:
           # and a real token there wins over OIDC -- npm uses the token and never exchanges
           # the id-token for a credential. Empty, npm sees no auth and falls back to trusted
           # publishing.
-          NODE_AUTH_TOKEN: ''
+          NODE_AUTH_TOKEN: ""
 
   snapshot:
     name: Publish beta snapshot to npm
@@ -220,9 +220,9 @@ jobs:
 
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 24.22.0
+          node-version: 24.22.1
           cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       # Trusted publishing needs npm CLI >= 11.5.1; Node 22 still bundles npm 10.x.
       #
@@ -250,4 +250,4 @@ jobs:
         run: pnpm changeset publish --tag beta --no-git-tag
         env:
           # Empty on purpose, as in the release job: a real token here would win over OIDC.
-          NODE_AUTH_TOKEN: ''
+          NODE_AUTH_TOKEN: ""

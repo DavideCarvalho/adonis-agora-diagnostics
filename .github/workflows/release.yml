@@ -62,9 +62,8 @@ jobs:
 
       # A published version is effectively unrecallable, and every push to master with a pending
       # changeset publishes: verify the exact commit being released here rather than trusting the
-      # PR's CI on an older base. These are ci.yml's checks on its pinned Node (the Node matrix
-      # stays in ci.yml). Build runs here too, so a broken build fails before the version commit
-      # is pushed rather than after.
+      # PR's CI on an older base. These are ci.yml's checks, on the same pinned Node. Build runs
+      # here too, so a broken build fails before the version commit is pushed rather than after.
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

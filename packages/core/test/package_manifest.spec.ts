@@ -67,7 +67,7 @@ describe('publishable package manifests', () => {
     }
   });
 
-  it('requires Node 24 or newer', async () => {
+  it('pins engines.node to exactly ">=24" (the 1.0 support floor)', async () => {
     for (const { path, manifest } of await publishableManifests()) {
       expect(manifest.engines?.node, path).toBe('>=24');
     }

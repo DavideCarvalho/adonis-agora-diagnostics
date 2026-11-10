@@ -21,6 +21,11 @@ export interface DiagnosticsConfig {
   forward?: ChannelSelection;
   /** Unique id for THIS process, for echo suppression. Default a random id per process. */
   nodeId?: string;
+  /**
+   * Directory (relative to the app root) whose modules default-export listener classes with
+   * `@OnDiagnostic` methods. Default `app/listeners/diagnostics`; `false` turns discovery off.
+   */
+  listenersPath?: string | false;
   /** Named cross-process transports, built with the {@link transports} factory. */
   transports?: Record<string, TransportProvider>;
 }
@@ -31,9 +36,11 @@ export function defineConfig(config: DiagnosticsConfig): DiagnosticsConfig {
 }
 
 export type {
+  DurableTransportConfig,
   QueueTransportConfig,
   RedisTransportConfig,
   TransportContext,
+  TransportHandle,
   TransportProvider,
 } from './transports/factory.js';
 export { transports };

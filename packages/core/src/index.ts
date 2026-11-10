@@ -29,13 +29,35 @@ export {
 } from './context_accessor.js';
 export {
   type DiagnosticsConfig,
+  type DurableTransportConfig,
   defineConfig,
   type QueueTransportConfig,
   type RedisTransportConfig,
   type TransportContext,
+  type TransportHandle,
   type TransportProvider,
   transports,
 } from './define_config.js';
+export type {
+  DeliveredEvent,
+  DeliveryTransportContext,
+  ListenerDelivery,
+  ListenerDeliveryTransport,
+  ListenerInvoker,
+} from './delivery.js';
+export { UnknownListenerError } from './listener_dispatch.js';
+export {
+  type DiagnosticEventOf,
+  type LazyListener,
+  type ListenerClass,
+  type ListenerEventMatcher,
+  type ListenerMethodDecorator,
+  type ListenerOptions,
+  type ListenerRef,
+  OnDiagnostic,
+  type RegisteredListener,
+  registeredListeners,
+} from './listeners.js';
 export {
   onChannelRegistered,
   registerChannel,

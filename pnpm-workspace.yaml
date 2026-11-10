@@ -9,3 +9,6 @@ allowBuilds:
   "@biomejs/biome": true
   "@swc/core": true
   esbuild: true
+# Every other peer of @adonis-agora/diagnostics is also a devDependency, so this only stops pnpm
+# from installing the optional `@adonis-agora/durable` peer, which the tests replace with a fake.
+autoInstallPeers: false

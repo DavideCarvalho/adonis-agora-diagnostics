@@ -2,15 +2,23 @@ import diagnostics_channel from 'node:diagnostics_channel';
 import { capability } from './capability.js';
 import { CHANNEL_PREFIX, channelName } from './channel.js';
 import { globalSlot } from './global-slot.js';
+import {
+  type DiagnosticEventOf,
+  type ListenerOptions,
+  type ListenerRef,
+  registerListenerRef,
+} from './listeners.js';
 import { onChannelRegistered, registeredChannels } from './registry.js';
-import type { DiagnosticEvent } from './types.js';
+import type { DiagnosticEvent, EventOf, LibOf } from './types.js';
 
 /**
  * A reaction to a diagnostics event. May be async; a rejected promise is routed
  * to {@link OnDiagnosticOptions.onError} (or swallowed) so a buggy handler can
  * never break the synchronous `emit()`/`trace()` that triggered it.
  */
-export type DiagnosticHandler = (event: DiagnosticEvent) => void | Promise<void>;
+export type DiagnosticHandler<TEvent extends DiagnosticEvent = DiagnosticEvent> = (
+  event: TEvent,
+) => void | Promise<void>;
 
 export interface OnDiagnosticOptions {
   /** Called when a handler throws or rejects. Defaults to a silent swallow. */
@@ -47,17 +55,37 @@ function invokeSafely(
 }
 
 /** Subscribe to every `agora:<lib>:*` channel (current and future). */
-export function onDiagnostic(
-  lib: string,
+export function onDiagnostic<TLib extends LibOf>(
+  lib: TLib,
   handler: DiagnosticHandler,
   opts?: OnDiagnosticOptions,
 ): () => void;
 /** Subscribe to the exact `agora:<lib>:<event>` channel. */
-export function onDiagnostic(
-  lib: string,
-  event: string,
-  handler: DiagnosticHandler,
+export function onDiagnostic<TLib extends LibOf, TEvent extends EventOf<TLib>>(
+  lib: TLib,
+  event: TEvent,
+  handler: DiagnosticHandler<DiagnosticEventOf<TLib, TEvent>>,
   opts?: OnDiagnosticOptions,
+): () => void;
+/**
+ * Register a listener class method for every event of `lib`. Unlike the function form, a listener
+ * runs through the configured transport (`queue`, `durable`) and has a stable id.
+ */
+export function onDiagnostic<TLib extends LibOf>(
+  lib: TLib,
+  listener: ListenerRef,
+  opts?: ListenerOptions,
+): () => void;
+/**
+ * Register a listener class method for one event, or for every event whose name matches a
+ * `RegExp`: `onDiagnostic('agent', 'run.finished', [TrackAgentRun, 'handle'])`, or with a lazy
+ * import, `[() => import('#listeners/track_agent_run'), 'handle']`.
+ */
+export function onDiagnostic<TLib extends LibOf, TEvent extends EventOf<TLib>>(
+  lib: TLib,
+  event: TEvent | RegExp,
+  listener: ListenerRef,
+  opts?: ListenerOptions,
 ): () => void;
 /**
  * Subscribe a handler to diagnostics events. Reads `node:diagnostics_channel`
@@ -72,14 +100,33 @@ export function onDiagnostic(
  */
 export function onDiagnostic(
   lib: string,
-  eventOrHandler: string | DiagnosticHandler,
-  handlerOrOpts?: DiagnosticHandler | OnDiagnosticOptions,
-  maybeOpts?: OnDiagnosticOptions,
+  eventOrHandler: string | RegExp | DiagnosticHandler | ListenerRef,
+  handlerOrOpts?: DiagnosticHandler | ListenerRef | OnDiagnosticOptions | ListenerOptions,
+  maybeOpts?: OnDiagnosticOptions | ListenerOptions,
 ): () => void {
+  if (Array.isArray(eventOrHandler)) {
+    return registerListenerRef(
+      lib,
+      undefined,
+      eventOrHandler as ListenerRef,
+      handlerOrOpts as ListenerOptions,
+    );
+  }
+  if (Array.isArray(handlerOrOpts)) {
+    return registerListenerRef(
+      lib,
+      eventOrHandler as string | RegExp,
+      handlerOrOpts as ListenerRef,
+      maybeOpts as ListenerOptions,
+    );
+  }
+  if (eventOrHandler instanceof RegExp) {
+    throw new TypeError('onDiagnostic: a RegExp event takes a [Listener, method] reference');
+  }
   const wildcard = typeof eventOrHandler !== 'string';
   const event = wildcard ? undefined : eventOrHandler;
   const handler = (wildcard ? eventOrHandler : handlerOrOpts) as DiagnosticHandler;
-  const opts = (wildcard ? (handlerOrOpts as OnDiagnosticOptions) : maybeOpts) ?? {};
+  const opts = ((wildcard ? handlerOrOpts : maybeOpts) ?? {}) as OnDiagnosticOptions;
 
   const subs: ActiveSub[] = [];
   let offRegistered: (() => void) | null = null;

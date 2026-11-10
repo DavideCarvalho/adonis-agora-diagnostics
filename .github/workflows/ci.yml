@@ -43,6 +43,16 @@ jobs:
       matrix:
         node: [24, 26]
     name: test (node ${{ matrix.node }})
+    # The two-process listener specs run against a real Redis (and @adonisjs/queue on it).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v7.0.1
 

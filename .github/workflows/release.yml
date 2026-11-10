@@ -27,6 +27,16 @@ jobs:
     name: Version and publish
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # The two-process listener specs run against a real Redis (and @adonisjs/queue on it).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
     permissions:
       contents: write # push the "version packages" commit + git tags
       # `@changesets/changelog-github` resolves each changeset's PR and author through the API;

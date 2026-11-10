@@ -1,0 +1,145 @@
+---
+title: Listeners
+description: React to diagnostics events with listener classes, and choose in config how reliably they run, from in-process to durable runs.
+icon: BellRing
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Libraries publish with `emit` and `trace`. Your app reacts with **listeners**: classes whose methods are marked with `@OnDiagnostic`. Where a listener runs, and what happens when it throws, is decided by the [transport](/docs/diagnostics/transports) you select in `config/diagnostics.ts`, the same way `@adonisjs/session` picks a store. The listener code stays the same.
+
+## Write a listener
+
+Put listener classes in `app/listeners/diagnostics`. Every class there whose methods use `@OnDiagnostic` is registered at boot, with no other wiring:
+
+```ts title="app/listeners/diagnostics/track_agent_run.ts"
+import { inject } from '@adonisjs/core'
+import { OnDiagnostic, type DiagnosticEventOf } from '@adonis-agora/diagnostics'
+import AgentRunStats from '#services/agent_run_stats'
+
+@inject()
+export default class TrackAgentRun {
+  constructor(protected stats: AgentRunStats) {}
+
+  @OnDiagnostic('agent', 'run.finished')
+  async handle(event: DiagnosticEventOf<'agent', 'run.finished'>) {
+    await this.stats.record(event.payload.runId, {
+      eventId: event.id,
+      at: new Date(event.ts),
+    })
+  }
+}
+```
+
+The class is built by the AdonisJS container, so `@inject()` works as it does in a controller. A method is awaited: a listener is done when its promise settles.
+
+`@OnDiagnostic` takes the lib and, optionally, which of its events to receive:
+
+| Call | Receives |
+| --- | --- |
+| `@OnDiagnostic('agent', 'run.finished')` | that one event |
+| `@OnDiagnostic('agent', /^run\./)` | every `agent` event whose name matches |
+| `@OnDiagnostic('agent')` | every `agent` event |
+
+Listeners receive the events published with `emit`. The span phases of `trace` (`start`, `end`, `error`, …) are for [observers](/docs/diagnostics/consumers) such as Telescope and OpenTelemetry.
+
+### Typed payloads
+
+For a channel declared in the [`ChannelRegistry`](/docs/diagnostics/typed-payloads), `lib` and `event` autocomplete, and `DiagnosticEventOf<'agent', 'run.finished'>` is the envelope with that channel's payload type. Annotate the parameter with it: if the annotation doesn't match the registered payload, the decorator line fails to compile. A channel that isn't declared gives `payload: unknown`.
+
+### Where listeners are discovered
+
+Discovery reads `listenersPath` from `config/diagnostics.ts`:
+
+```ts title="config/diagnostics.ts"
+import { defineConfig } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  listenersPath: 'app/listeners/diagnostics', // the default; `false` turns discovery off
+})
+```
+
+Each module in that directory (subdirectories included) must default-export the listener class. A module without one is skipped with a warning in the logs.
+
+## Register a listener in a preload
+
+You can also register a listener explicitly in `start/diagnostics.ts`, with the same `[Listener, 'method']` references as the AdonisJS emitter. A lazy import keeps the class out of the boot path until diagnostics resolves it:
+
+```ts title="start/diagnostics.ts"
+import { onDiagnostic } from '@adonis-agora/diagnostics'
+
+const NotifyBilling = () => import('#listeners/notify_billing')
+
+onDiagnostic('billing', 'invoice-paid', [NotifyBilling, 'handle'])
+onDiagnostic('billing', /^refund\./, [NotifyBilling, 'refund'])
+onDiagnostic('payments', [NotifyBilling, 'audit'], { id: 'billing-audit' })
+```
+
+A class registered here doesn't need `@OnDiagnostic`. Don't register a class from `app/listeners/diagnostics` here too: it is already registered.
+
+## Choose how reliably listeners run
+
+The transport selected as `default` decides:
+
+| transport | where the listener runs | lost if the process dies? | if the handler throws |
+|---|---|---|---|
+| none (local) | in the emitting process | yes | logged, dropped |
+| `redis` | in every process (broadcast) | yes | logged, dropped |
+| `queue` | in one consumer | no | job fails → `@adonisjs/queue` retries (at-least-once) |
+| `durable` | in one durable worker, as a durable run | no | durable retries with backoff; visible in the console; idempotent per event id |
+
+```ts title="config/diagnostics.ts"
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  default: 'durable',
+  transports: {
+    redis: transports.redis({ connection: 'main' }),
+    queue: transports.queue({ queue: 'diagnostics', retries: 5 }),
+    durable: transports.durable({ retries: 5 }),
+  },
+})
+```
+
+With `queue` and `durable`, the process that emits the event hands each `(listener, event)` pair to the transport once, after `emit()` has returned. The listener then runs in a worker, never in the emitting process. See [Transports](/docs/diagnostics/transports) for each one's setup.
+
+<Callout type="info" title="Same listeners in every process">
+A web process and a worker of the same app register the same listeners, because they run the same code and config. That is what lets a worker run a listener the web process handed over. Start workers with the same `config/diagnostics.ts`.
+</Callout>
+
+## Listener ids
+
+Every listener has a stable id, which the `queue` and `durable` transports use to route work:
+
+| Registered | Id |
+| --- | --- |
+| from `app/listeners/diagnostics/track_agent_run.ts`, method `handle` | `app/listeners/diagnostics/track_agent_run#handle` |
+| in a preload, `[NotifyBilling, 'handle']` | `NotifyBilling#handle` |
+| in a preload, with `{ id: 'billing-audit' }` | `billing-audit` |
+
+Renaming the file, class or method changes the id. Work already queued for the old id then fails with `E_UNKNOWN_DIAGNOSTICS_LISTENER`. To rename a listener that has queued work, register it in a preload with `{ id }` set to the old id until that work has drained.
+
+## Handle each event once
+
+`event.id` is a unique id for each emitted event, the same in every process. With `queue`, a listener can run more than once for the same event (a retry after a timeout, for example), so make writes idempotent on `event.id`:
+
+```ts title="app/listeners/diagnostics/record_invoice.ts"
+import { OnDiagnostic, type DiagnosticEventOf } from '@adonis-agora/diagnostics'
+import InvoiceEvent from '#models/invoice_event'
+
+export default class RecordInvoice {
+  @OnDiagnostic('billing', 'invoice-paid')
+  async handle(event: DiagnosticEventOf<'billing', 'invoice-paid'>) {
+    await InvoiceEvent.updateOrCreate(
+      { eventId: event.id },
+      { invoiceId: event.payload.invoiceId, amount: event.payload.amount },
+    )
+  }
+}
+```
+
+With `durable`, each `(listener, event)` pair is one durable run, so the same event never starts the same listener twice.
+
+## Listeners and `onDiagnostic` functions
+
+`onDiagnostic(lib, event, fn)` with a function still works as before: it is an observer, it runs in the process that receives the event, and the transport does not change that. Use it for cheap in-process work such as logging and metrics, and use a listener when the work needs retries or must run once.

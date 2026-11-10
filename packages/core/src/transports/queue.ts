@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getChannel } from '../channel.js';
 import { type ChannelRef, createChannelSelector, createTurnBatcher } from '../relay.js';
+import { publishRelayed } from '../relayed.js';
 import type { DiagnosticEvent } from '../types.js';
 
 export type { ChannelRef };
@@ -81,7 +82,7 @@ class ReEmitGuard implements RelayReEmitter {
     if (!env || typeof env.lib !== 'string' || typeof env.event !== 'string') return;
     this.reEmitting.add(env);
     try {
-      getChannel(env.lib, env.event).publish(env);
+      publishRelayed(env, () => getChannel(env.lib, env.event).publish(env));
     } catch {
       // a local subscriber threw — never propagate into the worker
     } finally {

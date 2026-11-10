@@ -18,6 +18,17 @@ export default defineConfig({
 
   /*
   |--------------------------------------------------------------------------
+  | Listeners
+  |--------------------------------------------------------------------------
+  |
+  | Classes in this directory whose methods use @OnDiagnostic are registered
+  | at boot. Set it to false to register listeners only from start/diagnostics.ts.
+  |
+  */
+  listenersPath: 'app/listeners/diagnostics',
+
+  /*
+  |--------------------------------------------------------------------------
   | Cross-process transports
   |--------------------------------------------------------------------------
   |
@@ -25,8 +36,11 @@ export default defineConfig({
   | until you name a \`default\` transport here — emit/trace/onDiagnostic keep
   | working either way, just within a single process.
   |
-  | default    — the transport (a key of \`transports\`) whose relay starts in
-  |              this process. Omit for local-only diagnostics.
+  | default    — the transport (a key of \`transports\`) that starts in this
+  |              process. Omit for local-only diagnostics, where listeners run
+  |              in the emitting process. With 'redis' they run in every
+  |              process; with 'queue' or 'durable' they run once, in a worker,
+  |              and are retried when they throw.
   | forward    — which local channels to relay: { libs: [...] }, exact
   |              { channels: [{ lib, event }] }, or { all: true }.
   | nodeId     — unique id for THIS process, used to drop its own echoes.
@@ -47,5 +61,6 @@ export default defineConfig({
   // transports: {
   //   redis: transports.redis({ connection: 'main' }),   // @adonisjs/redis + ioredis
   //   queue: transports.queue({ queue: 'diagnostics' }), // @adonisjs/queue
+  //   durable: transports.durable({ retries: 5 }),        // @adonis-agora/durable
   // },
 })

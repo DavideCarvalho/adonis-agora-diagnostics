@@ -47,6 +47,9 @@ export default defineConfig({
   |              Defaults to a random id per process.
   | transports — the named transports you use, built with the \`transports\`
   |              factory.
+  | role       — which half of a split deployment this process is: 'all'
+  |              (default), 'api' (emits and hands work to the transport, never
+  |              consumes or runs listeners) or 'worker'. Needs a \`default\`.
   |
   | To turn fan-out on, install the driver's peer dependencies, import the
   | factory alongside defineConfig:
@@ -57,6 +60,7 @@ export default defineConfig({
   |
   */
   // default: 'redis',
+  // role: 'all',
   // forward: { libs: ['resilience', 'durable'] },
   // transports: {
   //   redis: transports.redis({ connection: 'main' }),   // @adonisjs/redis + ioredis

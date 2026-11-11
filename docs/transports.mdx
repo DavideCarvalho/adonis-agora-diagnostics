@@ -80,12 +80,13 @@ With no `default` set, diagnostics stays in-process — `emit`/`trace`/`onDiagno
 
 ## Config reference
 
-The published config file takes six keys, all optional. `defineConfig` is an identity helper — it exists to type-check the object you pass it.
+The published config file takes seven keys, all optional. `defineConfig` is an identity helper — it exists to type-check the object you pass it.
 
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `otel` | `boolean` | `true` | Bridge `trace()` spans to OpenTelemetry when an OTel SDK is resolvable. `false` keeps the `emit`/`trace` path OTel-free even with an SDK installed. See [OpenTelemetry](/docs/diagnostics/opentelemetry). |
 | `default` | `string` | — | Name of the transport (a key of `transports`) whose relay starts in **this** process. Omit for local-only diagnostics. A name missing from `transports` throws at boot. |
+| `role` | `'all' \| 'api' \| 'worker'` | `'all'` | Which half of a split deployment **this** process is. `'api'` emits and hands work to the transport but never consumes or runs listeners; `'worker'` consumes and runs them. `'api'` and `'worker'` need a `default` transport, or boot fails. See [Split deployments](#split-deployments). |
 | `forward` | `ChannelSelection` | `{}` | Which local channels the relay forwards: `{ libs }`, `{ channels }`, `{ all }`. See [What gets forwarded](#what-gets-forwarded). |
 | `nodeId` | `string` | random per process | Identifies **this** process on the wire. A relayed event carries the id of the process that forwarded it, and a process drops events stamped with its own id — that's what stops an event from bouncing back to its origin. Set it only when you need a stable, human-readable id (e.g. in logs); the random default is correct for every normal deployment. |
 | `listenersPath` | `string \| false` | `'app/listeners/diagnostics'` | Directory whose listener classes are registered at boot. See [Listeners](/docs/diagnostics/listeners). |
@@ -204,7 +205,7 @@ Omit it and dispatch failures are swallowed: events simply stop arriving on the 
 
 This is the number-one reason forwarded events don't arrive. Re-emission happens through a **re-emitter bound in the worker's own process**, and starting the transport is what binds one. A worker process that never starts the transport runs the job as a **no-op**: it succeeds, the queue reports it processed, and no local handler ever fires.
 
-So the worker needs the transport selected too — it is not enough for the web process to have it. What the worker does *not* need is to forward anything of its own; an empty `forward` gives you a pure consumer:
+So the worker needs the transport selected too — it is not enough for the web process to have it. To keep the web process from consuming at the same time, set [`role`](#split-deployments) per process. What the worker does *not* need is to forward anything of its own; an empty `forward` gives you a pure consumer:
 
 ```ts title="config/diagnostics.ts"
 import env from '#start/env'
@@ -286,6 +287,56 @@ Every option is optional. `@adonis-agora/durable` must be installed and configur
 | it is installed but not configured | `` `transports.durable()` requires @adonis-agora/durable to be configured: no durable engine is bound in the container. Run `node ace configure @adonis-agora/durable` and register its provider, or pick another transport. `` |
 
 Listing `durable` without selecting it costs nothing, so a config can name it in every environment and select it only where durable runs.
+
+## Split deployments
+
+When the web and worker processes of an app are deployed separately, set `role` per process, from the environment, so the same config file serves both:
+
+```ts title="config/diagnostics.ts"
+import env from '#start/env'
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  default: 'queue',
+  role: env.get('DIAGNOSTICS_ROLE', 'all'),
+  forward: { libs: ['resilience'] },
+  transports: {
+    queue: transports.queue({ queue: 'diagnostics' }),
+  },
+})
+```
+
+```ts title="start/env.ts"
+DIAGNOSTICS_ROLE: Env.schema.enum.optional(['all', 'api', 'worker'] as const),
+```
+
+| `role` | What this process does |
+| --- | --- |
+| `'all'` (default) | Everything: emits, forwards, receives what other processes forward, runs listeners. |
+| `'api'` | Emits, forwards through the `default` transport and hands listener work to it. Never receives events from other processes and never runs a listener. |
+| `'worker'` | Receives and runs listeners. Diagnostics mounts no route, so a worker does everything `'all'` does. |
+
+### What each role does per transport
+
+| transport | `'api'` | `'worker'` / `'all'` | runs the worker half |
+| --- | --- | --- | --- |
+| `redis` | Publishes the `forward` channels and the libs your listeners listen to. Opens no subscriber connection, so events from other processes never reach it. | Subscribes, re-emits what other processes publish, and runs listeners for every event it sees, its own included. | Any long-running process booted with that role: no extra command. |
+| `queue` | Dispatches `agora.diagnostics.event` jobs and one `agora.diagnostics.listener` job per `(listener, event)`. A relay job run here re-emits nothing, and a listener job fails so the queue retries it elsewhere. | Runs both jobs: re-emits relayed events and runs listeners, with retries. | `node ace queue:work --queue=diagnostics` |
+| `durable` | Starts one durable run per `(listener, event)`. | Executes those runs. | `node ace durable:work` |
+
+With `redis`, every `'worker'` and `'all'` process runs each listener, so three worker replicas run it three times. Use `queue` or `durable` when a listener must run once.
+
+With `durable`, durable decides which process executes a run. A durable engine executes the runs it starts in-process by default, so on the api pods set `drive: false` in `config/durable.ts` (and `consumers: 'never'` when the transport has a broker) to leave every run to `durable:work`.
+
+`onDiagnostic(lib, event, fn)` functions and raw channel subscribers (Telescope, OpenTelemetry) are not listeners: on an `'api'` process they still fire, for the events that process emits.
+
+<Callout type="warn" title="A split needs a transport">
+Without a `default` transport each process only sees its own events: an `'api'` process would drop its listeners' work and a `'worker'` would never receive anything. Boot fails instead:
+
+```text
+@adonis-agora/diagnostics: config.role is "api", which splits emitting from consuming — but no `default` transport is selected, so nothing carries events between the two halves. Select a transport with `default`, or drop `role`.
+```
+</Callout>
 
 ## Write your own transport
 
@@ -442,7 +493,8 @@ stop()
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `pub` | `RedisLike` | — | Publisher connection. Required. |
-| `sub` | `RedisLike` | — | Subscriber connection, **separate** from `pub` (a subscribed client can't publish). For ioredis: `const sub = pub.duplicate()`. Required. |
+| `sub` | `RedisLike` | — | Subscriber connection, **separate** from `pub` (a subscribed client can't publish). For ioredis: `const sub = pub.duplicate()`. Required unless `receive` is `false`. |
+| `receive` | `boolean` | `true` | `false` publishes only: no `sub`, no events from other processes. What `transports.redis` does on a `role: 'api'` process. |
 | `libs` | `string[]` | — | Forward every event of these libs, current and future channels. |
 | `channels` | `ChannelRef[]` | — | Forward these exact `{ lib, event }` pairs, in addition to `libs`. |
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
@@ -473,6 +525,7 @@ interface RedisLike {
 | `channels` | `ChannelRef[]` | — | Forward these exact `{ lib, event }` pairs, in addition to `libs`. |
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
 | `nodeId` | `string` | random | Id stamped onto every dispatched envelope; envelopes carrying it are dropped as this process's own echo. |
+| `receive` | `boolean` | `true` | `false` forwards only and binds no re-emitter. What `transports.queue` does on a `role: 'api'` process. |
 | `onDispatchError` | `(error: unknown) => void` | ignored | Called when `dispatch` or `dispatchMany` throws or rejects, once per failed call. See [When dispatching fails](#when-dispatching-fails). |
 
 `job` is structural too — anything whose `dispatch(payload)` returns a promise (or nothing) satisfies it, which is what makes the relay testable without a queue backend. `dispatchMany` is optional; the `@adonisjs/queue` job class has it. Without it, every event in a turn gets its own `dispatch`:

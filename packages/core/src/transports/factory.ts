@@ -7,6 +7,7 @@ import type {
   ListenerInvoker,
 } from '../delivery.js';
 import type { ChannelSelection } from '../relay.js';
+import type { DiagnosticsRole } from '../role.js';
 import type { DiagnosticsListenerPayload } from './diagnostics_listener_job.js';
 import type { DiagnosticsEventEnvelope } from './queue.js';
 import type { RedisLike } from './redis.js';
@@ -20,6 +21,12 @@ export interface TransportContext {
   app: ApplicationService;
   /** Which local channels to forward across processes (libs/channels/all). */
   forward: ChannelSelection;
+  /**
+   * Which half of a split deployment this process is (`config.role`, default `'all'`). On `'api'` a
+   * transport forwards and delivers but never consumes: it must not re-emit events from other
+   * processes onto this one's bus.
+   */
+  role?: DiagnosticsRole;
   /** Unique id for THIS process, for echo suppression. */
   nodeId?: string;
   /**
@@ -144,6 +151,8 @@ export const transports = {
       const redisService = (await import('@adonisjs/redis/services/main')).default;
       const { createDiagnosticsRedisRelay, settle } = await import('./redis.js');
 
+      // An 'api' process publishes and never subscribes, so it opens no subscriber connection.
+      const receive = ctx.role !== 'api';
       const connection = config.connection
         ? redisService.connection(
             config.connection as Parameters<typeof redisService.connection>[0],
@@ -151,11 +160,11 @@ export const transports = {
         : redisService.connection();
       // The raw ioredis client behind the AdonisJS connection satisfies RedisLike.
       const pub = (connection as unknown as { ioConnection: RedisLike }).ioConnection;
-      const sub = (pub as unknown as { duplicate(): RedisLike }).duplicate();
+      const sub = receive ? (pub as unknown as { duplicate(): RedisLike }).duplicate() : undefined;
 
       const stop = createDiagnosticsRedisRelay({
         pub,
-        sub,
+        ...(sub ? { sub } : { receive: false }),
         ...selection(mergeSelection(ctx.forward, ctx.listeners)),
         ...(config.redisChannel !== undefined ? { redisChannel: config.redisChannel } : {}),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
@@ -168,6 +177,7 @@ export const transports = {
       // A ready connection gets QUIT, queued after the UNSUBSCRIBE above; one that
       // is still connecting or reconnecting is disconnected outright so it stops
       // retrying. Commands left pending then reject, and every one is caught.
+      if (!sub) return stop;
       return () => {
         stop();
         const client = sub as unknown as {
@@ -225,6 +235,8 @@ export const transports = {
         job,
         ...selection(ctx.forward),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
+        // An 'api' process binds no re-emitter: a relay job run there re-emits nothing.
+        ...(ctx.role === 'api' ? { receive: false } : {}),
         onDispatchError: (error) =>
           logger.error({ err: error }, 'failed to relay diagnostics event to queue'),
       });

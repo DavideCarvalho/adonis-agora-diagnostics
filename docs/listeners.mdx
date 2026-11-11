@@ -103,6 +103,8 @@ export default defineConfig({
 
 With `queue` and `durable`, the process that emits the event hands each `(listener, event)` pair to the transport once, after `emit()` has returned. The listener then runs in a worker, never in the emitting process. See [Transports](/docs/diagnostics/transports) for each one's setup.
 
+In a deployment split into web and worker processes, set `role: 'api'` on the web processes and `role: 'worker'` on the workers: an `'api'` process never runs a listener, whatever the transport. See [Split deployments](/docs/diagnostics/transports#split-deployments).
+
 <Callout type="info" title="Same listeners in every process">
 A web process and a worker of the same app register the same listeners, because they run the same code and config. That is what lets a worker run a listener the web process handed over. Start workers with the same `config/diagnostics.ts`.
 </Callout>

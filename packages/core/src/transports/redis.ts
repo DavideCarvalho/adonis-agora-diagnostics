@@ -23,11 +23,9 @@ export interface RedisPipelineLike {
   exec(): unknown;
 }
 
-export interface DiagnosticsRedisRelayOptions {
+interface RedisRelayBaseOptions {
   /** Publisher connection. */
   pub: RedisLike;
-  /** Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`. */
-  sub: RedisLike;
   /** Forward every event of these libs (current + future channels). */
   libs?: string[];
   /** Forward these exact channels, in addition to `libs`. */
@@ -39,6 +37,26 @@ export interface DiagnosticsRedisRelayOptions {
   /** Unique id for THIS process, for echo suppression. Default a random id. */
   nodeId?: string;
 }
+
+/**
+ * Options of {@link createDiagnosticsRedisRelay}. A relay that receives (the default) needs a `sub`
+ * connection; a publish-only relay (`receive: false`, a `role: 'api'` process) does not.
+ */
+export type DiagnosticsRedisRelayOptions = RedisRelayBaseOptions &
+  (
+    | {
+        /** Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`. */
+        sub: RedisLike;
+        /** Subscribe and re-emit events from other processes. Default `true`. */
+        receive?: true;
+      }
+    | {
+        /** Ignored: a publish-only relay never subscribes. */
+        sub?: RedisLike;
+        /** Publish only: never subscribe, never re-emit events from other processes. */
+        receive: false;
+      }
+  );
 
 const DEFAULT_REDIS_CHANNEL = 'agora:diagnostics:relay';
 
@@ -75,7 +93,11 @@ export function settle(result: unknown): void {
  *   the Redis message handler.
  */
 export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOptions): () => void {
-  const { pub, sub } = options;
+  const { pub } = options;
+  const sub = options.receive === false ? undefined : options.sub;
+  if (options.receive !== false && !sub) {
+    throw new TypeError('createDiagnosticsRedisRelay: `sub` is required unless `receive` is false');
+  }
   const redisChannel = options.redisChannel ?? DEFAULT_REDIS_CHANNEL;
   const nodeId = options.nodeId ?? randomUUID();
 
@@ -140,16 +162,19 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
     }
   };
 
-  sub.on('message', onMessage);
-  try {
-    settle(sub.subscribe(redisChannel));
-  } catch {
-    // a subscriber that throws synchronously only stops receiving; forwarding still works
+  if (sub) {
+    sub.on('message', onMessage);
+    try {
+      settle(sub.subscribe(redisChannel));
+    } catch {
+      // a subscriber that throws synchronously only stops receiving; forwarding still works
+    }
   }
 
   return () => {
     batcher.flush();
     selector.stop();
+    if (!sub) return;
     sub.removeListener('message', onMessage);
     try {
       settle(sub.unsubscribe(redisChannel));

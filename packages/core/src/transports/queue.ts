@@ -48,6 +48,11 @@ export interface DiagnosticsQueueRelayOptions {
   /** Unique id for THIS process, for echo suppression. Default a random id. */
   nodeId?: string;
   /**
+   * Whether to bind this process's re-emitter, so relay jobs a worker runs here re-emit onto the
+   * local bus. Default `true`; `false` makes a forward-only relay (a `role: 'api'` process).
+   */
+  receive?: boolean;
+  /**
    * Invoked if `job.dispatch(...)` / `job.dispatchMany(...)` throws or rejects (once per failed
    * call). Forwarding is fire-and-forget so a queue outage never throws into `emit()`; this hook
    * lets callers log the failure. Default: ignored.
@@ -142,7 +147,7 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
   const onDispatchError = options.onDispatchError;
 
   const guard = new ReEmitGuard(nodeId);
-  const unbindReEmitter = bindRelayReEmitter(guard);
+  const unbindReEmitter = options.receive === false ? () => {} : bindRelayReEmitter(guard);
 
   const report = (err: unknown): void => {
     try {

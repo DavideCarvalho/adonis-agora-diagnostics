@@ -29,6 +29,7 @@ export {
 } from './context_accessor.js';
 export {
   type DiagnosticsConfig,
+  type DiagnosticsRole,
   type DurableTransportConfig,
   defineConfig,
   type QueueTransportConfig,

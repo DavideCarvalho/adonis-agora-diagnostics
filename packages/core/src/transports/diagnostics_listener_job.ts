@@ -23,8 +23,10 @@ export default class DiagnosticsListenerJob extends Job<DiagnosticsListenerPaylo
   async execute(): Promise<void> {
     const invoke = getListenerInvoker();
     if (!invoke) {
-      // Thrown, not skipped: the worker has not booted diagnostics yet, so a retry can succeed.
-      throw new Error('@adonis-agora/diagnostics is not booted in this worker process');
+      // Thrown, not skipped: a retry can land on a worker that runs listeners.
+      throw new Error(
+        "@adonis-agora/diagnostics runs no listeners in this process: it is not booted, or its config.role is 'api'",
+      );
     }
     await invoke(this.payload.listenerId, this.payload.env);
   }

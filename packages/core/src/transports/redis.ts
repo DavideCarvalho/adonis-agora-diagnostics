@@ -23,19 +23,9 @@ export interface RedisPipelineLike {
   exec(): unknown;
 }
 
-export interface DiagnosticsRedisRelayOptions {
+interface RedisRelayBaseOptions {
   /** Publisher connection. */
   pub: RedisLike;
-  /**
-   * Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`.
-   * Required unless `receive` is `false`.
-   */
-  sub?: RedisLike;
-  /**
-   * Whether to subscribe and re-emit events from other processes. Default `true`; `false` makes a
-   * publish-only relay (a `role: 'api'` process), which needs no `sub`.
-   */
-  receive?: boolean;
   /** Forward every event of these libs (current + future channels). */
   libs?: string[];
   /** Forward these exact channels, in addition to `libs`. */
@@ -47,6 +37,26 @@ export interface DiagnosticsRedisRelayOptions {
   /** Unique id for THIS process, for echo suppression. Default a random id. */
   nodeId?: string;
 }
+
+/**
+ * Options of {@link createDiagnosticsRedisRelay}. A relay that receives (the default) needs a `sub`
+ * connection; a publish-only relay (`receive: false`, a `role: 'api'` process) does not.
+ */
+export type DiagnosticsRedisRelayOptions = RedisRelayBaseOptions &
+  (
+    | {
+        /** Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`. */
+        sub: RedisLike;
+        /** Subscribe and re-emit events from other processes. Default `true`. */
+        receive?: true;
+      }
+    | {
+        /** Ignored: a publish-only relay never subscribes. */
+        sub?: RedisLike;
+        /** Publish only: never subscribe, never re-emit events from other processes. */
+        receive: false;
+      }
+  );
 
 const DEFAULT_REDIS_CHANNEL = 'agora:diagnostics:relay';
 

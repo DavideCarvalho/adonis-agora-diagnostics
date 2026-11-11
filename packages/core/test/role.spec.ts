@@ -300,6 +300,7 @@ describe('receive-less relays', () => {
     await nextTurn();
     expect(pub.publishCount).toBe(1);
     stop();
+    // @ts-expect-error a relay that receives needs a `sub`
     expect(() => createDiagnosticsRedisRelay({ pub, libs: ['agent'] })).toThrow(
       '`sub` is required',
     );

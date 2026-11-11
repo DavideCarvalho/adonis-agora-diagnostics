@@ -27,4 +27,14 @@
 |     }
 |   })
 |
+| Example — register a listener class method. Unlike a function, it runs
+| through the configured transport and is retried by 'queue' and 'durable':
+|
+|   const TrackAgentRun = () => import('#listeners/track_agent_run')
+|
+|   onDiagnostic('agent', 'run.finished', [TrackAgentRun, 'handle'])
+|
+| Classes in app/listeners/diagnostics that use @OnDiagnostic are registered
+| on their own; don't register them here too.
+|
 */

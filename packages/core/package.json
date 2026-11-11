@@ -46,6 +46,11 @@
       "types": "./dist/src/otel/index.d.ts",
       "import": "./dist/src/otel/index.js",
       "default": "./dist/src/otel/index.js"
+    },
+    "./delivery": {
+      "types": "./dist/src/delivery.d.ts",
+      "import": "./dist/src/delivery.js",
+      "default": "./dist/src/delivery.js"
     }
   },
   "files": [
@@ -54,7 +59,7 @@
     "CHANGELOG.md",
     "skills"
   ],
-  "//sideEffects": "NOT false: registry.ts, context_accessor.ts and subscriber.ts install Symbol.for() global slots AT IMPORT TIME (cross-copy-stable channel registry / accessor / subscription set); channel.ts and trace.ts register onRegistryReset hooks at load. A bundler told sideEffects:false could tree-shake these initializers and break cross-copy discovery. Pure modules (index, types) stay tree-shakeable.",
+  "//sideEffects": "NOT false: registry.ts, context_accessor.ts, subscriber.ts, listeners.ts and relayed.ts install Symbol.for() global slots AT IMPORT TIME (cross-copy-stable channel registry / accessor / subscription set); channel.ts and trace.ts register onRegistryReset hooks at load. A bundler told sideEffects:false could tree-shake these initializers and break cross-copy discovery. Pure modules (index, types) stay tree-shakeable.",
   "sideEffects": [
     "**/registry.js",
     "**/registry.ts",
@@ -65,7 +70,11 @@
     "**/channel.js",
     "**/channel.ts",
     "**/trace.js",
-    "**/trace.ts"
+    "**/trace.ts",
+    "**/listeners.js",
+    "**/listeners.ts",
+    "**/relayed.js",
+    "**/relayed.ts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run copy:stubs",
@@ -76,6 +85,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
+    "@adonis-agora/durable": ">=1.0.0 <2.0.0 || >=1.0.0-rc.0 <2.0.0",
     "@adonisjs/core": "^7.3.0",
     "@adonisjs/queue": "^0.6.0 || ^0.7.0",
     "@adonisjs/redis": "^9.2.0 || ^10.0.0 || ^11.0.0",
@@ -83,6 +93,9 @@
     "ioredis": "^5 || ^6"
   },
   "peerDependenciesMeta": {
+    "@adonis-agora/durable": {
+      "optional": true
+    },
     "@adonisjs/queue": {
       "optional": true
     },

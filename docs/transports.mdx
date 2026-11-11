@@ -1,6 +1,6 @@
 ---
 title: Transports
-description: Fan diagnostics events out across processes — pick a transport (Redis or @adonisjs/queue) in config/diagnostics.ts, exactly like a session or cache store.
+description: Choose how events reach other processes and how listeners run — Redis, @adonisjs/queue or durable — in config/diagnostics.ts, exactly like a session or cache store.
 icon: Radio
 ---
 
@@ -10,7 +10,9 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 `node:diagnostics_channel` is **process-local**: an event emitted in your web process is invisible to a worker, and vice versa. A **transport** relays selected `agora:<lib>:<event>` channels across processes so `onDiagnostic` handlers (and any `getChannel(...).subscribe(...)`) fire everywhere.
 
-Transports ship **inside `@adonis-agora/diagnostics`** and are selected in `config/diagnostics.ts` — there are no separate `@adonis-agora/diagnostics-redis` / `-queue` packages. You pick a `default` transport and list the ones you use under `transports`, exactly the way `@adonisjs/session` picks a `store` or `@adonisjs/cache` picks a store driver. The driver's peer dependency (`@adonisjs/redis`, `@adonisjs/queue`) is imported lazily, only when you actually select it.
+The transport also decides how [listeners](/docs/diagnostics/listeners) run: in every process with `redis`, once in a worker with retries with `queue`, or as a durable run with `durable`.
+
+Transports ship **inside `@adonis-agora/diagnostics`** and are selected in `config/diagnostics.ts` — there are no separate `@adonis-agora/diagnostics-redis` / `-queue` packages. You pick a `default` transport and list the ones you use under `transports`, exactly the way `@adonisjs/session` picks a `store` or `@adonisjs/cache` picks a store driver. The driver's peer dependency (`@adonisjs/redis`, `@adonisjs/queue`, `@adonis-agora/durable`) is imported lazily, only when you actually select it.
 
 ## Configuring a transport
 
@@ -34,6 +36,7 @@ export default defineConfig({
   transports: {
     redis: transports.redis({ connection: 'main' }),   // @adonisjs/redis + ioredis
     queue: transports.queue({ queue: 'diagnostics' }), // @adonisjs/queue
+    durable: transports.durable({ retries: 5 }),        // @adonis-agora/durable
   },
 })
 ```
@@ -43,7 +46,7 @@ export default defineConfig({
 
 Install the driver's peer deps for whichever transport you selected:
 
-<Tabs items={['redis', 'queue']}>
+<Tabs items={['redis', 'queue', 'durable']}>
 <Tab value="redis">
 
 ```sh title="terminal"
@@ -58,6 +61,14 @@ npm i @adonisjs/queue
 ```
 
 </Tab>
+<Tab value="durable">
+
+```sh title="terminal"
+npm i @adonis-agora/durable
+node ace configure @adonis-agora/durable
+```
+
+</Tab>
 </Tabs>
 
 </Step>
@@ -69,7 +80,7 @@ With no `default` set, diagnostics stays in-process — `emit`/`trace`/`onDiagno
 
 ## Config reference
 
-The published config file takes exactly five keys, all optional. `defineConfig` is an identity helper — it exists to type-check the object you pass it.
+The published config file takes six keys, all optional. `defineConfig` is an identity helper — it exists to type-check the object you pass it.
 
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |
@@ -77,9 +88,10 @@ The published config file takes exactly five keys, all optional. `defineConfig` 
 | `default` | `string` | — | Name of the transport (a key of `transports`) whose relay starts in **this** process. Omit for local-only diagnostics. A name missing from `transports` throws at boot. |
 | `forward` | `ChannelSelection` | `{}` | Which local channels the relay forwards: `{ libs }`, `{ channels }`, `{ all }`. See [What gets forwarded](#what-gets-forwarded). |
 | `nodeId` | `string` | random per process | Identifies **this** process on the wire. A relayed event carries the id of the process that forwarded it, and a process drops events stamped with its own id — that's what stops an event from bouncing back to its origin. Set it only when you need a stable, human-readable id (e.g. in logs); the random default is correct for every normal deployment. |
+| `listenersPath` | `string \| false` | `'app/listeners/diagnostics'` | Directory whose listener classes are registered at boot. See [Listeners](/docs/diagnostics/listeners). |
 | `transports` | `Record<string, TransportProvider>` | `{}` | The named transports you can select with `default`. Values come from the `transports` factory, or from [your own transport](#write-your-own-transport). |
 
-Declaring a transport costs nothing: the factories return a lazy thunk, and the driver's peer dependency is imported only when that transport is the selected `default`. So it is fine to list Redis *and* queue and pick between them per environment.
+Declaring a transport costs nothing: the factories return a lazy thunk, and the driver's peer dependency is imported only when that transport is the selected `default`. So it is fine to list Redis, queue *and* durable and pick between them per environment: a transport that is listed but not selected never loads its driver and never throws, even when the driver isn't installed.
 
 ### What gets forwarded
 
@@ -113,6 +125,8 @@ transports.redis({
 })
 ```
 
+Redis is a broadcast: [listeners](/docs/diagnostics/listeners) run in every process that receives the event, the emitting one included. The libs your listeners listen to are relayed on top of `forward`, so you don't have to list them twice. A listener that throws is logged and the event is dropped for it.
+
 A Redis client that is subscribed cannot also publish, so the transport needs two legs. The **publisher** is the raw ioredis client behind the named `@adonisjs/redis` connection — owned by `@adonisjs/redis`, and never closed here. The **subscriber** is a `duplicate()` of it, created and owned by the transport itself; `@adonisjs/redis` does not track it, so the transport closes it on teardown. Without that close, the open socket would keep the process alive and a graceful shutdown (or a test run) would hang.
 
 ## The queue transport
@@ -143,6 +157,23 @@ node ace queue:work --queue=diagnostics
 ```
 
 A process that starts this transport can run the worker for it as-is: the job is resolvable there by its name, `agora.diagnostics.event`, whether or not your `locations` glob covers the package. Forwarding is fire-and-forget: a queue outage is reported, never thrown into `emit()`. The events of one turn are pushed with a single `DiagnosticsEventJob.dispatchMany(...)` (on the configured `queue`), which still creates one job per event; a turn with a single event uses `dispatch`.
+
+### Listeners on the queue
+
+With `queue` selected, [listeners](/docs/diagnostics/listeners) don't run in the process that emits the event. That process dispatches one `agora.diagnostics.listener` job per `(listener, event)` onto the same `queue`, and a worker runs the listener. When the handler throws, the job fails and `@adonisjs/queue` retries it:
+
+```ts
+transports.queue({
+  queue: 'diagnostics',
+  retries: 5, // retries after a failed attempt (default 3)
+})
+```
+
+Delivery is at-least-once, so make listeners idempotent on `event.id`. The worker must run the same app and config, so it has the same listeners; start it on the transport's queue:
+
+```sh title="terminal"
+node ace queue:work --queue=diagnostics
+```
 
 ### When dispatching fails
 
@@ -225,21 +256,60 @@ What you really bind is the `nodeId`: envelopes stamped with it are dropped as t
 The relay only dispatches; it never waits. That fits diagnostics (you want events to spread, not to block the emitter). Pick the queue transport when a queue is already your cross-process backbone; pick Redis when you want a dedicated low-latency pub/sub path.
 </Callout>
 
+## The durable transport
+
+`transports.durable(options)` runs each [listener](/docs/diagnostics/listeners) as a durable run of [`@adonis-agora/durable`](/docs/durable): one run per `(listener, event)`, started from the process that emitted the event and executed by any durable worker. A failing listener is retried with backoff, every attempt is visible in the durable console, and the same event never starts the same listener twice.
+
+```ts title="config/diagnostics.ts"
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
+export default defineConfig({
+  default: 'durable',
+  transports: {
+    durable: transports.durable({
+      retries: 5,        // attempts before the run fails
+      backoff: 'exp',    // 'fixed' or 'exp'
+      backoffMs: 1000,   // base delay between attempts
+      backoffMaxMs: 60_000,
+      jitter: true,
+    }),
+  },
+})
+```
+
+Every option is optional. `@adonis-agora/durable` must be installed and configured in the app. When `durable` is the selected `default` and it isn't, the app fails at boot, not on the first event:
+
+| Situation | Error at boot |
+| --- | --- |
+| `@adonis-agora/durable` is not installed | `` `transports.durable()` requires @adonis-agora/durable. Install it and run `node ace configure @adonis-agora/durable`, or pick another transport. `` |
+| it is installed but too old to provide `@adonis-agora/durable/diagnostics` | `` `transports.durable()` requires a version of @adonis-agora/durable that exports `@adonis-agora/durable/diagnostics`. Upgrade @adonis-agora/durable, or pick another transport. `` |
+| it is installed but not configured | `` `transports.durable()` requires @adonis-agora/durable to be configured: no durable engine is bound in the container. Run `node ace configure @adonis-agora/durable` and register its provider, or pick another transport. `` |
+
+Listing `durable` without selecting it costs nothing, so a config can name it in every environment and select it only where durable runs.
+
 ## Write your own transport
 
 `transports.redis` and `transports.queue` are not privileged — `config.transports` is a plain `Record<string, TransportProvider>`, and a `TransportProvider` is any thunk with this shape:
 
 ```ts
-type TransportProvider = (ctx: TransportContext) => Promise<() => void>
+type TransportProvider = (ctx: TransportContext) => Promise<(() => void) | TransportHandle>
 
 interface TransportContext {
-  app: ApplicationService   // the booted app — resolve the logger, connections, config…
-  forward: ChannelSelection // the config's `forward`, ready to hand to createChannelSelector
-  nodeId?: string           // the config's `nodeId`, when one was set
+  app: ApplicationService      // the booted app — resolve the logger, connections, config…
+  forward: ChannelSelection    // the config's `forward`, ready to hand to createChannelSelector
+  nodeId?: string              // this process's id
+  listeners?: ChannelSelection // the libs your listeners listen to
+  invoke?: ListenerInvoker     // runs a registered listener in this process
+  listenerIds?: readonly string[]
+}
+
+interface TransportHandle {
+  stop?(): void | Promise<void>
+  deliver?(deliveries: readonly ListenerDelivery[]): void | Promise<void>
 }
 ```
 
-The thunk is called once, after the container is ready, and only for the transport named by `default`. It must return a **synchronous** teardown, which runs on graceful shutdown — kick off async closes from inside it, but don't return a promise. Everything the transport opened is its own to close there: a socket left open keeps the process from exiting.
+The thunk is called once, after the container is ready, and only for the transport named by `default`. A relay returns a **synchronous** teardown, which runs on graceful shutdown — kick off async closes from inside it, but don't return a promise. Everything the transport opened is its own to close there: a socket left open keeps the process from exiting.
 
 To be a good citizen a transport does four things: subscribe with `createChannelSelector`, stamp each outgoing event with `nodeId`, drop incoming events stamped with its own `nodeId`, and guard a re-emitted event from being forwarded straight back out. Here is a complete NATS transport doing all four:
 
@@ -318,6 +388,38 @@ export default defineConfig({
 ```
 
 `createChannelSelector(selection, forward)` is the same engine both built-in transports use. It subscribes `forward` to every channel matched by the selection — the exact `channels`, every channel of the wildcard `libs`, or all of them — including channels registered **after** the relay started, so a lib whose first event fires an hour into the process is picked up automatically. Each channel is subscribed at most once, and `selector.stop()` removes every subscription plus the future-registration listener.
+
+### A transport that runs listeners
+
+Return a handle with `deliver` to take over listener execution, as `queue` and `durable` do. The emitting process calls `deliver` with each `(listener, event)` pair once, after `emit()` returned; wherever you run the work, call `ctx.invoke(listenerId, envelope)`, which rejects with the listener's error so you can retry. `envelope.id` is the event id: `diag:${envelope.id}:${listenerId}` is a good idempotency key.
+
+```ts title="config/diagnostics.ts"
+import { defineConfig } from '@adonis-agora/diagnostics'
+import type { TransportProvider } from '@adonis-agora/diagnostics'
+import Outbox from '#models/outbox'
+
+function outboxTransport(): TransportProvider {
+  return async (ctx) => ({
+    async deliver(deliveries) {
+      await Outbox.createMany(
+        deliveries.map(({ listenerId, envelope }) => ({
+          key: `diag:${envelope.id}:${listenerId}`,
+          listenerId,
+          envelope: JSON.stringify(envelope),
+        })),
+      )
+    },
+    // An outbox poller elsewhere calls ctx.invoke(row.listenerId, JSON.parse(row.envelope))
+  })
+}
+
+export default defineConfig({
+  default: 'outbox',
+  transports: { outbox: outboxTransport() },
+})
+```
+
+The types are importable without loading diagnostics at runtime, from `@adonis-agora/diagnostics/delivery` (`ListenerDeliveryTransport`, `ListenerDelivery`, `DeliveryTransportContext`, `ListenerInvoker`).
 
 <Callout type="warn" title="Never throw out of forward()">
 `forward` runs **inline** inside the `emit()` that produced the event. A throw there would surface in unrelated application code, and a slow call there slows down the emitting request. Catch everything, and keep the send non-blocking. The built-in transports [only queue there](#forwarding-cost-on-the-emitter) and send once per turn.

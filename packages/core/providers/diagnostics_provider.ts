@@ -1,34 +1,39 @@
+import { randomUUID } from 'node:crypto';
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { DiagnosticsConfig } from '../src/define_config.js';
+import { discoverListeners } from '../src/listener_discovery.js';
+import {
+  bindListenerInvoker,
+  createListenerInvoker,
+  startListenerDispatch,
+} from '../src/listener_dispatch.js';
+import { loadListeners, registeredListeners } from '../src/listeners.js';
 import { unsubscribeAll } from '../src/subscriber.js';
+import type { TransportHandle } from '../src/transports/factory.js';
+
+/** Where listener classes are discovered by default, relative to the app root. */
+export const DEFAULT_LISTENERS_PATH = 'app/listeners/diagnostics';
 
 /**
  * Wires `@adonis-agora/diagnostics` into the AdonisJS application.
  *
- * The emit/trace/onDiagnostic surface is just process-global functions over
- * `node:diagnostics_channel`, so there is little to register at boot. The
- * provider's jobs are:
- *
- * 1. **Lifecycle** — tear down every {@link onDiagnostic} subscription on graceful
- *    shutdown so a reloaded process (dev watcher, tests) does not leak listeners.
- * 2. **OpenTelemetry auto-bridge** — when `@opentelemetry/api` is resolvable (an
- *    OTel SDK such as `@adonisjs/otel` is installed), dynamically load the OTel
- *    bridge and start it, so every `trace()` span becomes a real OTel span and
- *    the W3C `traceparent` is published on the global slot for `@adonis-agora/durable`.
- *    The import is dynamic so the bridge module (and its `@opentelemetry/api`
- *    import) is never loaded when OTel is absent — the `emit`/`trace` hot path
- *    stays OTel-free. Opt out with `otel: false` in `config/diagnostics.ts`.
+ * 1. **OpenTelemetry auto-bridge** (boot) — when `@opentelemetry/api` is resolvable, load the OTel
+ *    bridge and start it. Opt out with `otel: false` in `config/diagnostics.ts`.
+ * 2. **Listeners** (ready, after preload files ran) — discover `@OnDiagnostic` classes in the
+ *    listeners directory, resolve the lazy `[() => import(...), 'method']` references registered in
+ *    preloads, and subscribe them to the bus.
+ * 3. **Transport** (ready) — start the transport named by `config.default`. A delivering transport
+ *    (`queue`, `durable`) takes over listener execution; otherwise listeners run in-process.
+ * 4. **Lifecycle** (shutdown) — stop the transport and every subscription.
  *
  * The trace-id auto-fill is wired from the other side: `@adonis-agora/context`'s provider
- * soft-detects this package at boot and registers its accessor via
- * `setContextAccessor`, so `emit()` correlates by `traceId` with zero config here.
- *
- * Register diagnostics handlers in `start/diagnostics.ts` (published by
- * `node ace configure @adonis-agora/diagnostics`).
+ * soft-detects this package at boot and registers its accessor via `setContextAccessor`.
  */
 export default class DiagnosticsProvider {
   #stopOtel: (() => void) | null = null;
-  #stopTransport: (() => void) | null = null;
+  #transport: TransportHandle | null = null;
+  #stopDispatch: (() => void) | null = null;
+  #unbindInvoker: (() => void) | null = null;
 
   constructor(protected app: ApplicationService) {}
 
@@ -49,33 +54,74 @@ export default class DiagnosticsProvider {
     this.#stopOtel = otel.stop;
   }
 
-  /**
-   * Start the configured cross-process transport, if any. Runs after the container is ready so the
-   * transport can resolve connections/loggers. `config.default` names the transport (a key of
-   * `config.transports`) whose relay starts in this process; omit it for local-only diagnostics.
-   */
   async ready() {
     const config = this.app.config.get<DiagnosticsConfig>('diagnostics', {});
-    const name = config.default;
-    if (!name) return;
+    const logger = await this.app.container.make('logger');
 
-    const provider = config.transports?.[name];
-    if (!provider) {
-      throw new Error(
-        `@adonis-agora/diagnostics: config.default is "${name}", but config.transports.${name} is not defined`,
+    const listenersPath = config.listenersPath ?? DEFAULT_LISTENERS_PATH;
+    if (listenersPath !== false) {
+      await discoverListeners(this.app.makePath(), this.app.makePath(listenersPath), (message) =>
+        logger.warn(`@adonis-agora/diagnostics: ${message}`),
       );
     }
+    await loadListeners((error) =>
+      logger.error({ err: error }, 'failed to load a diagnostics listener'),
+    );
 
-    this.#stopTransport = await provider({
-      app: this.app,
-      forward: config.forward ?? {},
-      ...(config.nodeId !== undefined ? { nodeId: config.nodeId } : {}),
+    const invoke = createListenerInvoker((target) =>
+      this.app.container.make(target as unknown as new () => object),
+    );
+    this.#unbindInvoker = bindListenerInvoker(invoke);
+
+    const name = config.default;
+    if (name) {
+      const provider = config.transports?.[name];
+      if (!provider) {
+        throw new Error(
+          `@adonis-agora/diagnostics: config.default is "${name}", but config.transports.${name} is not defined`,
+        );
+      }
+      const listeners = registeredListeners();
+      const started = await provider({
+        app: this.app,
+        forward: config.forward ?? {},
+        nodeId: config.nodeId ?? randomUUID(),
+        listeners: { libs: [...new Set(listeners.map((listener) => listener.lib))] },
+        listenerIds: listeners.map((listener) => listener.id),
+        invoke,
+      });
+      this.#transport = typeof started === 'function' ? { stop: started } : started;
+    }
+
+    const deliver = this.#transport?.deliver?.bind(this.#transport);
+    this.#stopDispatch = startListenerDispatch({
+      invoke,
+      deliver,
+      onListenerError: (error, listenerId, envelope) =>
+        logger.error(
+          { err: error, listenerId, lib: envelope.lib, event: envelope.event, id: envelope.id },
+          'diagnostics listener failed',
+        ),
+      onDeliveryError: (error, deliveries) =>
+        logger.error(
+          { err: error, deliveries: deliveries.length },
+          'failed to hand diagnostics events to the transport',
+        ),
     });
   }
 
   async shutdown() {
-    this.#stopTransport?.();
-    this.#stopTransport = null;
+    this.#stopDispatch?.();
+    this.#stopDispatch = null;
+    const transport = this.#transport;
+    this.#transport = null;
+    try {
+      await transport?.stop?.();
+    } catch {
+      // best-effort teardown
+    }
+    this.#unbindInvoker?.();
+    this.#unbindInvoker = null;
     this.#stopOtel?.();
     this.#stopOtel = null;
     unsubscribeAll();

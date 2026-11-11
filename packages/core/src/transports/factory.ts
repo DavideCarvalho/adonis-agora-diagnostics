@@ -1,5 +1,13 @@
 import type { ApplicationService } from '@adonisjs/core/types';
+import type {
+  DurableDiagnosticsModule,
+  DurableTransportConfig,
+  ListenerDelivery,
+  ListenerDeliveryTransport,
+  ListenerInvoker,
+} from '../delivery.js';
 import type { ChannelSelection } from '../relay.js';
+import type { DiagnosticsListenerPayload } from './diagnostics_listener_job.js';
 import type { DiagnosticsEventEnvelope } from './queue.js';
 import type { RedisLike } from './redis.js';
 
@@ -14,6 +22,24 @@ export interface TransportContext {
   forward: ChannelSelection;
   /** Unique id for THIS process, for echo suppression. */
   nodeId?: string;
+  /**
+   * The libs that have listeners in this process. A broadcasting transport relays them on top of
+   * `forward`, so the listeners run in every process.
+   */
+  listeners?: ChannelSelection;
+  /** Runs a registered listener in this process (for delivering transports). */
+  invoke?: ListenerInvoker;
+  /** Ids of the listeners registered in this process at boot. */
+  listenerIds?: readonly string[];
+}
+
+/**
+ * What a started transport hands back: a `stop` for shutdown and, for a delivering transport, a
+ * `deliver` that takes over listener execution. See {@link ListenerDeliveryTransport}.
+ */
+export interface TransportHandle {
+  stop?(): void | Promise<void>;
+  deliver?(deliveries: readonly ListenerDelivery[]): void | Promise<void>;
 }
 
 /**
@@ -22,7 +48,7 @@ export interface TransportContext {
  * (`@adonisjs/redis`, `@adonisjs/queue`) inside the thunk, so the driver is only loaded when it is
  * actually selected — keeping those packages optional.
  */
-export type TransportProvider = (ctx: TransportContext) => Promise<() => void>;
+export type TransportProvider = (ctx: TransportContext) => Promise<(() => void) | TransportHandle>;
 
 /** Options for the Redis pub/sub transport. */
 export interface RedisTransportConfig {
@@ -40,9 +66,49 @@ export interface QueueTransportConfig {
    * `node ace queue:work --queue={queue}`. Omit to use the job's default queue (`default`).
    */
   queue?: string;
+  /** How many times a listener job is retried after its handler throws. Default `3`. */
+  retries?: number;
 }
 
+export type { DurableTransportConfig };
+
+const DURABLE_MODULE = '@adonis-agora/durable/diagnostics';
+let loadDurable: () => Promise<DurableDiagnosticsModule> = () =>
+  import(/* @vite-ignore */ DURABLE_MODULE) as Promise<DurableDiagnosticsModule>;
+
+/** Replace how `transports.durable()` loads `@adonis-agora/durable/diagnostics`. For tests. */
+export function setDurableModuleLoader(
+  loader: (() => Promise<DurableDiagnosticsModule>) | null,
+): void {
+  loadDurable =
+    loader ??
+    (() => import(/* @vite-ignore */ DURABLE_MODULE) as Promise<DurableDiagnosticsModule>);
+}
+
+function isMissingDurable(error: unknown): 'missing' | 'outdated' | null {
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  const text = typeof message === 'string' ? message : '';
+  if (!text.includes('@adonis-agora/durable')) return null;
+  if (code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') return 'outdated';
+  if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') return 'missing';
+  return null;
+}
+
+export const DURABLE_NOT_INSTALLED =
+  '`transports.durable()` requires @adonis-agora/durable. Install it and run `node ace configure @adonis-agora/durable`, or pick another transport.';
+export const DURABLE_OUTDATED =
+  '`transports.durable()` requires a version of @adonis-agora/durable that exports `@adonis-agora/durable/diagnostics`. Upgrade @adonis-agora/durable, or pick another transport.';
+export const DURABLE_NOT_CONFIGURED =
+  '`transports.durable()` requires @adonis-agora/durable to be configured: no durable engine is bound in the container. Run `node ace configure @adonis-agora/durable` and register its provider, or pick another transport.';
+
 /** Spread the channel selection onto a relay options object, honoring `exactOptionalPropertyTypes`. */
+/** `forward` plus the libs that have listeners. */
+function mergeSelection(forward: ChannelSelection, listeners?: ChannelSelection): ChannelSelection {
+  if (!listeners?.libs?.length || forward.all) return forward;
+  const libs = [...new Set([...(forward.libs ?? []), ...listeners.libs])];
+  return { ...forward, libs };
+}
+
 function selection(forward: ChannelSelection) {
   return {
     ...(forward.libs !== undefined ? { libs: forward.libs } : {}),
@@ -90,7 +156,7 @@ export const transports = {
       const stop = createDiagnosticsRedisRelay({
         pub,
         sub,
-        ...selection(ctx.forward),
+        ...selection(mergeSelection(ctx.forward, ctx.listeners)),
         ...(config.redisChannel !== undefined ? { redisChannel: config.redisChannel } : {}),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
       });
@@ -122,37 +188,103 @@ export const transports = {
     };
   },
 
-  /** Relay diagnostics events across processes over `@adonisjs/queue`. */
+  /**
+   * Run listeners through `@adonisjs/queue`: one job per `(listener, event)`, retried when the
+   * handler throws. Also relays the `forward` channels onto a worker's local bus.
+   */
   queue(config: QueueTransportConfig = {}): TransportProvider {
     return async (ctx) => {
       const { Locator } = await import('@adonisjs/queue');
       const { default: DiagnosticsEventJob } = await import('./diagnostics_event_job.js');
+      const { default: DiagnosticsListenerJob } = await import('./diagnostics_listener_job.js');
       const { createDiagnosticsQueueRelay } = await import('./queue.js');
       const logger = await ctx.app.container.make('logger');
 
-      // Ensure a worker in this process (or one sharing this registry) can resolve the job by name.
+      // Ensure a worker in this process (or one sharing this registry) can resolve the jobs by name.
       const jobName = DiagnosticsEventJob.options.name ?? 'agora.diagnostics.event';
       Locator.register(jobName, DiagnosticsEventJob);
+      DiagnosticsListenerJob.options = {
+        ...DiagnosticsListenerJob.options,
+        maxRetries: config.retries ?? 3,
+      };
+      Locator.register(DiagnosticsListenerJob.options.name, DiagnosticsListenerJob);
 
       const queueName = config.queue;
+      const onQueue = <T extends { toQueue(name: string): T }>(dispatcher: T): T =>
+        queueName ? dispatcher.toQueue(queueName) : dispatcher;
       const job = {
         dispatch(payload: DiagnosticsEventEnvelope) {
-          const dispatcher = DiagnosticsEventJob.dispatch(payload);
-          return queueName ? dispatcher.toQueue(queueName) : dispatcher;
+          return onQueue(DiagnosticsEventJob.dispatch(payload));
         },
         dispatchMany(payloads: DiagnosticsEventEnvelope[]) {
-          const dispatcher = DiagnosticsEventJob.dispatchMany(payloads);
-          return queueName ? dispatcher.toQueue(queueName) : dispatcher;
+          return onQueue(DiagnosticsEventJob.dispatchMany(payloads));
         },
       };
 
-      return createDiagnosticsQueueRelay({
+      const stopRelay = createDiagnosticsQueueRelay({
         job,
         ...selection(ctx.forward),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
         onDispatchError: (error) =>
           logger.error({ err: error }, 'failed to relay diagnostics event to queue'),
       });
+
+      const handle: ListenerDeliveryTransport = {
+        async deliver(deliveries) {
+          const payloads: DiagnosticsListenerPayload[] = deliveries.map((delivery) => ({
+            listenerId: delivery.listenerId,
+            env: delivery.envelope,
+          }));
+          if (payloads.length === 1) {
+            await onQueue(
+              DiagnosticsListenerJob.dispatch(payloads[0] as DiagnosticsListenerPayload),
+            );
+          } else {
+            await onQueue(DiagnosticsListenerJob.dispatchMany(payloads));
+          }
+        },
+        stop: stopRelay,
+      };
+      return handle;
+    };
+  },
+
+  /**
+   * Run listeners as durable runs of `@adonis-agora/durable`: one run per `(listener, event)`,
+   * retried with backoff and idempotent per event id. `@adonis-agora/durable` is imported only when
+   * this transport is the selected `default`; boot fails with a clear error when it is missing or
+   * not configured.
+   */
+  durable(config: DurableTransportConfig = {}): TransportProvider {
+    return async (ctx) => {
+      let durable: DurableDiagnosticsModule;
+      try {
+        durable = await loadDurable();
+      } catch (error) {
+        const missing = isMissingDurable(error);
+        if (missing === 'missing') throw new Error(DURABLE_NOT_INSTALLED, { cause: error });
+        if (missing === 'outdated') throw new Error(DURABLE_OUTDATED, { cause: error });
+        throw error;
+      }
+      if (
+        typeof durable?.isConfigured !== 'function' ||
+        typeof durable.createDeliveryTransport !== 'function'
+      ) {
+        throw new Error(DURABLE_OUTDATED);
+      }
+      if (!(await durable.isConfigured(ctx.app))) throw new Error(DURABLE_NOT_CONFIGURED);
+      if (!ctx.invoke) {
+        throw new Error('`transports.durable()` must be started by the diagnostics provider');
+      }
+      return durable.createDeliveryTransport(
+        {
+          app: ctx.app,
+          nodeId: ctx.nodeId ?? 'unknown',
+          invoke: ctx.invoke,
+          listenerIds: ctx.listenerIds ?? [],
+        },
+        config,
+      );
     };
   },
 };

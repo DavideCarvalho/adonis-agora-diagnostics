@@ -6,7 +6,7 @@ icon: Ear
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-A diagnostic event is just a message on a Node channel. **Anything can read it.** This page shows the built-in observer (`onDiagnostic`), the lower-level registry it's built on, and how to write your own consumer in a few lines.
+A diagnostic event is just a message on a Node channel. **Anything can read it.** This page shows the built-in observer (`onDiagnostic`), the lower-level registry it's built on, and how to write your own consumer in a few lines. For work that should be retried or run once in a worker, write a [listener](/docs/diagnostics/listeners) instead.
 
 ## `onDiagnostic` — the built-in observer
 

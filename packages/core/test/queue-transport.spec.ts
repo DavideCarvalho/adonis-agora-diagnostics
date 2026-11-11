@@ -28,8 +28,10 @@ const queue = vi.hoisted(() => {
 vi.mock('@adonisjs/queue', () => ({ Job: queue.Job, Locator: queue.Locator }));
 
 import { emit } from '../src/channel.js';
+import { bindListenerInvoker } from '../src/listener_dispatch.js';
 import { resetRegistry } from '../src/registry.js';
-import type { TransportContext } from '../src/transports/factory.js';
+import DiagnosticsListenerJob from '../src/transports/diagnostics_listener_job.js';
+import type { TransportContext, TransportHandle } from '../src/transports/factory.js';
 import { transports } from '../src/transports/factory.js';
 
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -43,10 +45,13 @@ function context(): TransportContext {
   } as unknown as TransportContext;
 }
 
+type Started = (() => void) | TransportHandle;
+const stopOf = (started: Started) => (typeof started === 'function' ? started() : started.stop?.());
+
 describe('transports.queue', () => {
-  const teardowns: Array<() => void> = [];
+  const teardowns: Started[] = [];
   afterEach(() => {
-    for (const t of teardowns.splice(0)) t();
+    for (const t of teardowns.splice(0)) stopOf(t);
     queue.calls.length = 0;
     resetRegistry();
   });
@@ -74,5 +79,83 @@ describe('transports.queue', () => {
     await nextTurn();
 
     expect(queue.calls).toEqual([{ kind: 'one', payload: expect.objectContaining({ node: 'A' }) }]);
+  });
+});
+
+describe('transports.queue listener delivery', () => {
+  const started: TransportHandle[] = [];
+  afterEach(async () => {
+    for (const handle of started.splice(0)) await handle.stop?.();
+    queue.calls.length = 0;
+    resetRegistry();
+    bindListenerInvoker(null);
+  });
+
+  const envelope = (n: number) =>
+    ({ v: 1, id: `id-${n}`, ts: 0, lib: 'agent', event: 'run.finished', payload: { n } }) as const;
+
+  it('dispatches one listener job per (listener, event) onto the configured queue', async () => {
+    const handle = (await transports.queue({ queue: 'diagnostics' })(context())) as TransportHandle;
+    started.push(handle);
+
+    await handle.deliver?.([{ listenerId: 'track#handle', envelope: envelope(1) }]);
+    await handle.deliver?.([
+      { listenerId: 'track#handle', envelope: envelope(2) },
+      { listenerId: 'audit#handle', envelope: envelope(2) },
+    ]);
+
+    expect(queue.calls).toEqual([
+      {
+        kind: 'one',
+        payload: { listenerId: 'track#handle', env: envelope(1) },
+        queue: 'diagnostics',
+      },
+      {
+        kind: 'many',
+        payload: [
+          { listenerId: 'track#handle', env: envelope(2) },
+          { listenerId: 'audit#handle', env: envelope(2) },
+        ],
+        queue: 'diagnostics',
+      },
+    ]);
+  });
+
+  it('retries a listener job 3 times by default, or as configured', async () => {
+    started.push((await transports.queue()(context())) as TransportHandle);
+    expect(DiagnosticsListenerJob.options).toMatchObject({
+      name: 'agora.diagnostics.listener',
+      maxRetries: 3,
+    });
+    started.push((await transports.queue({ retries: 7 })(context())) as TransportHandle);
+    expect(DiagnosticsListenerJob.options.maxRetries).toBe(7);
+  });
+
+  it('runs the listener in the worker and fails the job when the handler throws', async () => {
+    const invoke = vi.fn(async (listenerId: string) => {
+      if (listenerId === 'failing#handle') throw new Error('boom');
+    });
+    bindListenerInvoker(invoke);
+
+    const ok = new DiagnosticsListenerJob();
+    (ok as unknown as { payload: unknown }).payload = {
+      listenerId: 'track#handle',
+      env: envelope(1),
+    };
+    await ok.execute();
+    expect(invoke).toHaveBeenCalledWith('track#handle', envelope(1));
+
+    const failing = new DiagnosticsListenerJob();
+    (failing as unknown as { payload: unknown }).payload = {
+      listenerId: 'failing#handle',
+      env: envelope(1),
+    };
+    await expect(failing.execute()).rejects.toThrow('boom');
+  });
+
+  it('fails the job (so it is retried) when diagnostics has not booted in the worker', async () => {
+    const job = new DiagnosticsListenerJob();
+    (job as unknown as { payload: unknown }).payload = { listenerId: 'x#y', env: envelope(1) };
+    await expect(job.execute()).rejects.toThrow(/not booted/);
   });
 });

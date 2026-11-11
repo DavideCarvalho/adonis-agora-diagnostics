@@ -62,7 +62,8 @@ export default defineConfig({
 })
 ```
 
-With no `default`, diagnostics stays local-only — everything still works in-process.
+With no `default`, diagnostics stays local-only — everything still works in-process
+(`role: 'api'`/`'worker'` still need a `default`; without one boot fails).
 
 ## Core patterns
 

@@ -8,6 +8,7 @@ import {
   startListenerDispatch,
 } from '../src/listener_dispatch.js';
 import { loadListeners, registeredListeners } from '../src/listeners.js';
+import { assertRoleHasTransport, resolveRole } from '../src/role.js';
 import { unsubscribeAll } from '../src/subscriber.js';
 import type { TransportHandle } from '../src/transports/factory.js';
 
@@ -24,6 +25,8 @@ export const DEFAULT_LISTENERS_PATH = 'app/listeners/diagnostics';
  *    preloads, and subscribe them to the bus.
  * 3. **Transport** (ready) — start the transport named by `config.default`. A delivering transport
  *    (`queue`, `durable`) takes over listener execution; otherwise listeners run in-process.
+ *    `config.role: 'api'` forwards and delivers but never consumes: no relay subscription, no
+ *    re-emitter, no process invoker, and listeners never run here.
  * 4. **Lifecycle** (shutdown) — stop the transport and every subscription.
  *
  * The trace-id auto-fill is wired from the other side: `@adonis-agora/context`'s provider
@@ -56,6 +59,8 @@ export default class DiagnosticsProvider {
 
   async ready() {
     const config = this.app.config.get<DiagnosticsConfig>('diagnostics', {});
+    const role = resolveRole(config);
+    assertRoleHasTransport(role, config.default);
     const logger = await this.app.container.make('logger');
 
     const listenersPath = config.listenersPath ?? DEFAULT_LISTENERS_PATH;
@@ -71,7 +76,9 @@ export default class DiagnosticsProvider {
     const invoke = createListenerInvoker((target) =>
       this.app.container.make(target as unknown as new () => object),
     );
-    this.#unbindInvoker = bindListenerInvoker(invoke);
+    // The process invoker is what a queue worker runs listener jobs with. An 'api' process never
+    // runs one, so it publishes none (a delivering transport still gets `invoke` in its context).
+    if (role !== 'api') this.#unbindInvoker = bindListenerInvoker(invoke);
 
     const name = config.default;
     if (name) {
@@ -85,6 +92,7 @@ export default class DiagnosticsProvider {
       const started = await provider({
         app: this.app,
         forward: config.forward ?? {},
+        role,
         nodeId: config.nodeId ?? randomUUID(),
         listeners: { libs: [...new Set(listeners.map((listener) => listener.lib))] },
         listenerIds: listeners.map((listener) => listener.id),
@@ -94,6 +102,9 @@ export default class DiagnosticsProvider {
     }
 
     const deliver = this.#transport?.deliver?.bind(this.#transport);
+    // Without a delivering transport, listeners run in the process that sees the event. An 'api'
+    // process never runs them: a 'worker' (or 'all') process receives the event and runs them.
+    if (role === 'api' && !deliver) return;
     this.#stopDispatch = startListenerDispatch({
       invoke,
       deliver,

@@ -166,6 +166,56 @@ describe('listeners across two processes on a real Redis', () => {
   );
 
   run(
+    "redis, role 'api' + 'worker': the worker runs the listener, the api process never does",
+    async (ctx) => {
+      if (!redisUrl) return ctx.skip();
+      const ns = `diag-test-${randomUUID()}`;
+      try {
+        const api = await start('redis', 'api', 'api', ns);
+        const worker = await start('redis', 'web', 'worker', ns);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        api.send(`emit ${JSON.stringify({ n: 3 })}`);
+        worker.send(`emit ${JSON.stringify({ n: 4 })}`);
+        await worker.until((m) => m.filter((x) => x.invoked).length >= 2);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        expect(api.invocations()).toEqual([]);
+        expect(worker.invocations().map((r) => r.payload)).toEqual(
+          expect.arrayContaining([{ n: 3 }, { n: 4 }]),
+        );
+        expect(worker.invocations()).toHaveLength(2);
+      } finally {
+        await Promise.all(peers.splice(0).map((p) => p.stop()));
+      }
+    },
+    30_000,
+  );
+
+  run(
+    "queue, role 'api': hands the listener to the worker and never runs it",
+    async (ctx) => {
+      if (!redisUrl) return ctx.skip();
+      const ns = `diag-test-${randomUUID()}`;
+      try {
+        const worker = await start('queue', 'worker', 'worker', ns);
+        const api = await start('queue', 'api', 'api', ns);
+
+        api.send(`emit ${JSON.stringify({ n: 5 })}`);
+        await worker.until((m) => m.filter((x) => x.invoked).length >= 2, 15_000);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        expect(api.invocations()).toEqual([]);
+        expect(worker.invocations().map((r) => r.attempt)).toEqual([1, 2]);
+        expect(worker.invocations()[0]?.payload).toEqual({ n: 5 });
+      } finally {
+        await Promise.all(peers.splice(0).map((p) => p.stop()));
+      }
+    },
+    30_000,
+  );
+
+  run(
     'queue: the listener runs once in a worker, retried after a throw, never at the origin',
     async (ctx) => {
       if (!redisUrl) return ctx.skip();

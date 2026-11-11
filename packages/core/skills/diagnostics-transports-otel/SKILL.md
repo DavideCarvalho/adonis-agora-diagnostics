@@ -2,7 +2,7 @@
 name: diagnostics-transports-otel
 description: >
   Cross-process fan-out and OpenTelemetry export for @adonis-agora/diagnostics.
-  Covers defineConfig keys (otel, default, forward, nodeId, transports), the
+  Covers defineConfig keys (otel, default, role, forward, nodeId, transports), the
   transports.redis/transports.queue factories with lazy peer imports
   (@adonisjs/redis + ioredis, @adonisjs/queue), forward ChannelSelection
   (libs/channels/all), node ace queue:work --queue= flag, worker-only processes,
@@ -92,6 +92,20 @@ node ace queue:work --queue=diagnostics
 ```
 
 Source: `docs/transports.mdx` § Worker-only processes
+
+### 1b. Split deployment: set `role` per process
+
+```ts
+// config/diagnostics.ts — DIAGNOSTICS_ROLE is 'api' on web pods, 'worker' on workers
+role: env.get('DIAGNOSTICS_ROLE', 'all'),
+```
+
+`'api'` forwards and hands listener work to the transport but never consumes or runs
+listeners (Redis: no subscriber). `'worker'` consumes and runs them. Both require a
+`default` transport, or boot fails. Worker half: `queue:work --queue=…` for `queue`,
+`durable:work` for `durable`, any long-running process for `redis`.
+
+Source: `docs/transports.mdx` § Split deployments
 
 ### 2. Verify a re-emitter is bound
 

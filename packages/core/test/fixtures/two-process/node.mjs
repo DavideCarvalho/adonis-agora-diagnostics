@@ -6,7 +6,10 @@
  *   stdout: one JSON object per line ({ ready }, { invoked }, { error })
  *   stdin:  `emit <json payload>` to emit `agora:agent:run.finished`, `stop` to shut down
  *
- * argv: <mode: redis | queue> <role: web | worker> <name> <redisUrl> <namespace>
+ * argv: <mode: redis | queue> <role: web | worker | api> <name> <redisUrl> <namespace>
+ *
+ * `api` wires a `role: 'api'` process as the provider does: a publish-only relay, no re-emitter,
+ * no process invoker, and listeners never run here.
  */
 import { realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -38,13 +41,15 @@ OnDiagnostic('agent', 'run.finished')(TrackRun.prototype, 'handle');
 registerListenerClass(TrackRun, 'app/listeners/diagnostics/track_run');
 await loadListeners();
 
+const api = role === 'api';
 const invoke = createListenerInvoker((target) => new target());
-bindListenerInvoker(invoke);
+if (!api) bindListenerInvoker(invoke);
 const logger = { error: (obj, msg) => out({ error: msg ?? String(obj) }), warn() {}, info() {} };
 const ctx = {
   app: { container: { make: async () => logger } },
   forward: { libs: ['agent'] },
   nodeId: name,
+  ...(api ? { role: 'api' } : {}),
   listeners: { libs: ['agent'] },
   invoke,
 };
@@ -55,21 +60,18 @@ let deliver;
 if (mode === 'redis') {
   const { createDiagnosticsRedisRelay } = await load('transports/redis.js');
   const pub = new Redis(redisUrl);
-  const sub = pub.duplicate();
+  const sub = api ? undefined : pub.duplicate();
   const redisChannel = `${namespace}:relay`;
-  await sub.subscribe(redisChannel);
+  await sub?.subscribe(redisChannel);
   const stop = createDiagnosticsRedisRelay({
     pub,
-    sub,
+    ...(sub ? { sub } : { receive: false }),
     libs: ['agent'],
     nodeId: name,
     redisChannel,
   });
-  cleanups.push(
-    stop,
-    () => pub.quit(),
-    () => sub.quit(),
-  );
+  cleanups.push(stop, () => pub.quit());
+  if (sub) cleanups.push(() => sub.quit());
 } else {
   const queuePkg = realpathSync(
     fileURLToPath(new URL('../../../node_modules/@adonisjs/queue', import.meta.url)),
@@ -85,7 +87,7 @@ if (mode === 'redis') {
     adapters: { redis: redis(connection) },
     worker: { idleDelay: '20ms', concurrency: 1, gracefulShutdown: false },
   };
-  if (role === 'web') await QueueManager.init(config);
+  if (role !== 'worker') await QueueManager.init(config);
 
   const handle = await transports.queue({ queue: namespace, retries: 3 })(ctx);
   deliver = handle.deliver.bind(handle);
@@ -105,13 +107,15 @@ if (mode === 'redis') {
   );
 }
 
-const stopDispatch = startListenerDispatch({
-  invoke,
-  deliver,
-  onListenerError: (error) => out({ error: `listener: ${error.message}` }),
-  onDeliveryError: (error) => out({ error: `delivery: ${error.message}` }),
-});
-cleanups.unshift(stopDispatch);
+if (!api || deliver) {
+  const stopDispatch = startListenerDispatch({
+    invoke,
+    deliver,
+    onListenerError: (error) => out({ error: `listener: ${error.message}` }),
+    onDeliveryError: (error) => out({ error: `delivery: ${error.message}` }),
+  });
+  cleanups.unshift(stopDispatch);
+}
 
 out({ ready: true });
 

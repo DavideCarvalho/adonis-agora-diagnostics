@@ -1,4 +1,5 @@
 import type { ChannelSelection } from './relay.js';
+import type { DiagnosticsRole } from './role.js';
 import { type TransportProvider, transports } from './transports/factory.js';
 
 /**
@@ -17,6 +18,20 @@ export interface DiagnosticsConfig {
    * diagnostics (no cross-process fan-out).
    */
   default?: string;
+  /**
+   * Which half of a split deployment this process is.
+   *
+   * - `'all'` (default) — one process emits, forwards, consumes and runs listeners.
+   * - `'api'` — emit and forward through the `default` transport, and hand listener work to it
+   *   (`queue`, `durable`); never consume what other processes forward, never run a listener here.
+   *   With `redis` this process publishes and does not subscribe.
+   * - `'worker'` — consume and run listeners. Diagnostics mounts no HTTP route, so a worker does
+   *   everything `'all'` does.
+   *
+   * Splitting needs a transport between the halves, so `'api'`/`'worker'` without a `default`
+   * transport are refused at boot.
+   */
+  role?: DiagnosticsRole;
   /** Which local channels to forward across processes: `libs`, exact `channels`, or `all`. */
   forward?: ChannelSelection;
   /** Unique id for THIS process, for echo suppression. Default a random id per process. */
@@ -35,6 +50,7 @@ export function defineConfig(config: DiagnosticsConfig): DiagnosticsConfig {
   return config;
 }
 
+export type { DiagnosticsRole } from './role.js';
 export type {
   DurableTransportConfig,
   QueueTransportConfig,

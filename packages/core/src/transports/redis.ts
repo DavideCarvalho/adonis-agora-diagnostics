@@ -26,8 +26,16 @@ export interface RedisPipelineLike {
 export interface DiagnosticsRedisRelayOptions {
   /** Publisher connection. */
   pub: RedisLike;
-  /** Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`. */
-  sub: RedisLike;
+  /**
+   * Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`.
+   * Required unless `receive` is `false`.
+   */
+  sub?: RedisLike;
+  /**
+   * Whether to subscribe and re-emit events from other processes. Default `true`; `false` makes a
+   * publish-only relay (a `role: 'api'` process), which needs no `sub`.
+   */
+  receive?: boolean;
   /** Forward every event of these libs (current + future channels). */
   libs?: string[];
   /** Forward these exact channels, in addition to `libs`. */
@@ -75,7 +83,11 @@ export function settle(result: unknown): void {
  *   the Redis message handler.
  */
 export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOptions): () => void {
-  const { pub, sub } = options;
+  const { pub } = options;
+  const sub = options.receive === false ? undefined : options.sub;
+  if (options.receive !== false && !sub) {
+    throw new TypeError('createDiagnosticsRedisRelay: `sub` is required unless `receive` is false');
+  }
   const redisChannel = options.redisChannel ?? DEFAULT_REDIS_CHANNEL;
   const nodeId = options.nodeId ?? randomUUID();
 
@@ -140,16 +152,19 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
     }
   };
 
-  sub.on('message', onMessage);
-  try {
-    settle(sub.subscribe(redisChannel));
-  } catch {
-    // a subscriber that throws synchronously only stops receiving; forwarding still works
+  if (sub) {
+    sub.on('message', onMessage);
+    try {
+      settle(sub.subscribe(redisChannel));
+    } catch {
+      // a subscriber that throws synchronously only stops receiving; forwarding still works
+    }
   }
 
   return () => {
     batcher.flush();
     selector.stop();
+    if (!sub) return;
     sub.removeListener('message', onMessage);
     try {
       settle(sub.unsubscribe(redisChannel));

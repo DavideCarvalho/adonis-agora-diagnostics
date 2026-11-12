@@ -205,6 +205,23 @@ describe('diagnostics doctor checks', () => {
     ).toBe('ok');
   });
 
+  it('diagnostics.recent-buffer: errors on a size that makes boot fail', async () => {
+    const out = await run('diagnostics.recent-buffer', fakeApp({ recent: { size: 0 } }));
+    expect(out[0]).toMatchObject({ status: 'error' });
+  });
+
+  it('diagnostics.transport: redis with no connection selected anywhere', async () => {
+    const root = appRoot({ '@adonisjs/redis': {} });
+    const out = await run(
+      'diagnostics.transport',
+      fakeApp(
+        { default: 'r', transports: { r: transports.redis() } },
+        { root, other: { redis: {} } },
+      ),
+    );
+    expect(out[0]?.message).toContain('no redis connection is selected');
+  });
+
   it('diagnostics.listeners: warns on a custom path that does not exist', async () => {
     const root = appRoot();
     expect((await run('diagnostics.listeners', fakeApp({}, { root })))[0]?.status).toBe('ok');

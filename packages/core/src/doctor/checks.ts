@@ -108,11 +108,19 @@ async function checkRedis(
     {},
   );
   const connection = options.connection ?? redis?.connection;
-  if (connection === undefined || !Object.hasOwn(redis?.connections ?? {}, connection)) {
+  if (connection === undefined) {
     return {
       status: 'error',
-      message: `default transport "${name}" uses the redis connection "${String(connection)}", which is not in config/redis.ts`,
-      fix: `Add "${String(connection)}" to connections in config/redis.ts, or set transports.redis({ connection }) to one that exists`,
+      message: `default transport "${name}" is redis, but no redis connection is selected`,
+      fix: 'Set `connection` in config/redis.ts, or pass transports.redis({ connection }) in config/diagnostics.ts',
+      docs: `${DOCS}/transports`,
+    };
+  }
+  if (!Object.hasOwn(redis?.connections ?? {}, connection)) {
+    return {
+      status: 'error',
+      message: `default transport "${name}" uses the redis connection "${connection}", which is not in config/redis.ts`,
+      fix: `Add "${connection}" to connections in config/redis.ts, or set transports.redis({ connection }) to one that exists`,
       docs: `${DOCS}/transports`,
     };
   }
@@ -222,6 +230,15 @@ export function diagnosticsDoctorChecks(): AgoraDoctorCheck[] {
       run(app): AgoraDoctorResult {
         const recent = configOf(app).recent;
         const on = recent === true || (typeof recent === 'object' && recent !== null);
+        const size = typeof recent === 'object' && recent !== null ? recent.size : undefined;
+        if (size !== undefined && (!Number.isInteger(size) || size < 1)) {
+          return {
+            status: 'error',
+            message: `recent.size is ${String(size)}: it must be a positive integer, so the app fails to boot`,
+            fix: 'Set recent.size to a positive integer (default 500) in config/diagnostics.ts',
+            docs: `${DOCS}/mcp-tools#recent-events`,
+          };
+        }
         if (on && app.inProduction) {
           return {
             status: 'warn',

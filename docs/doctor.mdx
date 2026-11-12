@@ -47,8 +47,9 @@ commands: [
 | --- | --- | --- |
 | `diagnostics.peers` | `@adonisjs/core`, and the transport peers you installed, are in the supported range | error |
 | `diagnostics.agora-siblings` | no 0.x and 1.x `@adonis-agora` libs mixed | warn |
+| `diagnostics.registered` | every installed Agora lib with checks has its provider registered | warn |
 | `diagnostics.transport` | `default` names a transport; `redis` has `@adonisjs/redis` and its connection; `queue` has `@adonisjs/queue` configured; `durable` has `@adonis-agora/durable` installed and configured | error |
 | `diagnostics.role` | `role: 'api'`/`'worker'` has a `default` transport; `forward` is not set without one | error / warn |
-| `diagnostics.recent-buffer` | the [recent-events buffer](/docs/diagnostics/mcp-tools#recent-events) is not forced on in production | warn |
+| `diagnostics.recent-buffer` | `recent.size` is a positive integer; the [recent-events buffer](/docs/diagnostics/mcp-tools#recent-events) is not forced on in production | error / warn |
 | `diagnostics.listeners` | a custom `listenersPath` exists | warn |
 | `diagnostics.otel` | the OpenTelemetry SDK packages are on one major line (`@adonisjs/otel` 2 is SDK 3) and `@opentelemetry/api` is installed once; reported by telescope instead when it is installed | error / warn |

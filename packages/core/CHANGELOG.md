@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 1.0.0-rc.4
+
+### Minor Changes
+
+- [#141](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/141) [`cb3c962`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/cb3c9623958a68b97b8c5cdc17b58965d198c2b9) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `node ace agora:doctor` (the shared Agora health check) and `node ace diagnostics:doctor`, with checks `diagnostics.transport`, `diagnostics.role`, `diagnostics.recent-buffer`, `diagnostics.listeners` and `diagnostics.otel`. New commands barrel `@adonis-agora/diagnostics/commands` (registered by `configure`; existing apps add it to `adonisrc.ts`) and `@adonis-agora/diagnostics/doctor` entry for `--no-boot`.
+
 ## 1.0.0-rc.3
 
 ### Minor Changes

@@ -13,19 +13,21 @@ like *"which listeners run on durable events?"* or *"what did the app emit for t
 
 | Tool | What it returns |
 | --- | --- |
-| `diagnostics_list_channels` | every `agora:<lib>:<event>` channel seen, with its subscriber count (`lib`, `subscribed`, `limit`, `page`) |
+| `diagnostics_list_channels` | every `agora:<lib>:<event>` channel seen, with its subscriber count for `emit()` events and for `trace()` spans (`lib`, `subscribed`, `limit`, `page`) |
 | `diagnostics_list_listeners` | your listeners (id, lib, event, method) and the transport that runs them (`lib`, `limit`, `page`) |
-| `diagnostics_list_recent_events` | the newest events of the process that answered (`lib`, `event` exact or `/regex/`, `traceId`, `limit`) |
+| `diagnostics_list_recent_events` | the newest events of the process that answered, `emit()` events and `trace()` span phases (`lib`, `event` exact or `/regex/`, `traceId`, `limit`, `page`) |
 
 Lists return `{ items, next }`: pass `next` as `page` to get the following page.
 
 ## Recent events
 
-`diagnostics_list_recent_events` reads an in-memory buffer of the last 500 events. Payloads are cut
-to 2 KB and keys that look like secrets (`token`, `password`, `apiKey`…) are redacted.
+`diagnostics_list_recent_events` reads an in-memory buffer of the last 500 events: what `emit()`
+published, and the `start`, `end`, `asyncEnd` and `error` phases of each `trace()` span (with its
+`spanId`, `result` and `error`). Payloads and results are cut to 2 KB and keys that look like
+secrets (`token`, `password`, `apiKey`…) are redacted.
 
 The buffer runs outside production when the dev tools are installed. In production it is off by
-default, because it listens to every channel and so every `emit` builds its event. Turn it on (or
+default, because it listens to every channel, so every `emit` and `trace` builds its event. Turn it on (or
 off) in `config/diagnostics.ts`:
 
 ```ts title="config/diagnostics.ts"
@@ -41,6 +43,7 @@ Read it from code too:
 import { recentEvents } from '@adonis-agora/diagnostics'
 
 recentEvents({ lib: 'durable', event: '/run\\.failed/', limit: 10 })
+recentEvents({ traceId, limit: 50, offset: 50 }) // the next 50
 ```
 
 <Callout type="info">

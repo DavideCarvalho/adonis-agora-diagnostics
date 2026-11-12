@@ -1,7 +1,7 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import { CHANNEL_PREFIX } from './channel.js';
 import { onChannelRegistered, registeredChannels } from './registry.js';
-import type { DiagnosticEvent } from './types.js';
+import type { DiagnosticEvent, SpanEvent, SpanPhase } from './types.js';
 
 /** Default number of events the recent-events buffer keeps. */
 export const DEFAULT_RECENT_SIZE = 500;
@@ -19,6 +19,22 @@ export interface RecentEvent {
   durationMs?: number;
   /** The payload with secret-looking keys replaced, or a `{ truncated, bytes, preview }` cut. */
   payload: unknown;
+  /** For `trace()` spans: the phase (`start`, `end`, `asyncEnd`, `error`). Absent on `emit` events. */
+  phase?: SpanPhase;
+  /** For `trace()` spans: the id every phase of one span shares. */
+  spanId?: string;
+  /** For a span's `end`/`asyncEnd`: the result, bounded like `payload`. */
+  result?: unknown;
+  /** For a span's `error` (or failed `asyncEnd`): the error's name and message. */
+  error?: { name?: string; message: string };
+}
+
+/** The span phases the buffer keeps (`asyncStart` carries nothing of its own). */
+const SPAN_PHASES: readonly SpanPhase[] = ['start', 'end', 'asyncEnd', 'error'];
+
+function describeError(error: unknown): { name?: string; message: string } {
+  if (error instanceof Error) return { name: error.name, message: error.message.slice(0, 500) };
+  return { message: String(error).slice(0, 500) };
 }
 
 /** Filters for {@link recentEvents}. */
@@ -29,6 +45,8 @@ export interface RecentEventsFilter {
   traceId?: string;
   /** How many of the newest matches to return (default 20). */
   limit?: number;
+  /** Skip this many of the newest matches first (paging). */
+  offset?: number;
 }
 
 const SECRET_KEY = /(secret|token|password|passwd|authorization|cookie|api[_-]?key|credential)/i;
@@ -91,14 +109,21 @@ export class RecentEventsBuffer {
     return this.#offRegistered !== null;
   }
 
-  /** Subscribe to every current and future `agora:*` channel. Idempotent. */
+  /**
+   * Subscribe to every current and future `agora:*` channel, and to the span sub-channels
+   * (`:start`, `:end`, `:asyncEnd`, `:error`) `trace()` publishes for each. Idempotent.
+   */
   start(): void {
     if (this.started) return;
-    const subscribe = (name: string) => {
-      if (!name.startsWith(`${CHANNEL_PREFIX}:`)) return;
-      const listener = (message: unknown) => this.push(message as DiagnosticEvent);
+    const listen = (name: string) => {
+      const listener = (message: unknown) => this.push(message as DiagnosticEvent | SpanEvent);
       diagnostics_channel.channel(name).subscribe(listener);
       this.#subscribed.push({ name, listener });
+    };
+    const subscribe = (name: string) => {
+      if (!name.startsWith(`${CHANNEL_PREFIX}:`)) return;
+      listen(name);
+      for (const phase of SPAN_PHASES) listen(`${name}:${phase}`);
     };
     for (const name of registeredChannels()) subscribe(name);
     this.#offRegistered = onChannelRegistered(subscribe);
@@ -115,9 +140,10 @@ export class RecentEventsBuffer {
   }
 
   /** Record one envelope (normally called by the bus subscription). Never throws. */
-  push(envelope: DiagnosticEvent): void {
+  push(envelope: DiagnosticEvent | SpanEvent): void {
     try {
       if (envelope === null || typeof envelope !== 'object') return;
+      const span = 'phase' in envelope && typeof envelope.phase === 'string' ? envelope : null;
       const entry: RecentEvent = {
         ...(envelope.id !== undefined ? { id: envelope.id } : {}),
         ts: envelope.ts,
@@ -126,6 +152,11 @@ export class RecentEventsBuffer {
         ...(envelope.traceId !== undefined ? { traceId: envelope.traceId } : {}),
         ...(envelope.durationMs !== undefined ? { durationMs: envelope.durationMs } : {}),
         payload: boundPayload(envelope.payload),
+        ...(span !== null ? { phase: span.phase, spanId: span.spanId } : {}),
+        ...(span !== null && span.result !== undefined
+          ? { result: boundPayload(span.result) }
+          : {}),
+        ...(span !== null && span.error !== undefined ? { error: describeError(span.error) } : {}),
       };
       this.#ring[this.#next] = entry;
       this.#next = (this.#next + 1) % this.size;
@@ -143,6 +174,7 @@ export class RecentEventsBuffer {
   /** The newest events matching `filter`, newest first. */
   list(filter: RecentEventsFilter = {}): RecentEvent[] {
     const limit = Math.max(1, Math.floor(filter.limit ?? 20));
+    let skip = Math.max(0, Math.floor(filter.offset ?? 0));
     const event = toMatcher(filter.event);
     const out: RecentEvent[] = [];
     for (let i = 1; i <= this.#count && out.length < limit; i++) {
@@ -151,6 +183,10 @@ export class RecentEventsBuffer {
       if (filter.lib !== undefined && entry.lib !== filter.lib) continue;
       if (filter.traceId !== undefined && entry.traceId !== filter.traceId) continue;
       if (event !== undefined && !event(entry.event)) continue;
+      if (skip > 0) {
+        skip--;
+        continue;
+      }
       out.push(entry);
     }
     return out;
@@ -167,7 +203,11 @@ export class RecentEventsBuffer {
 /** `'run.done'` → exact match; `/run\./` (RegExp or its string form) → test. */
 function toMatcher(event: string | RegExp | undefined): ((name: string) => boolean) | undefined {
   if (event === undefined || event === '') return undefined;
-  if (event instanceof RegExp) return (name) => event.test(name);
+  if (event instanceof RegExp) {
+    // A caller's /g or /y pattern keeps `lastIndex` between calls: compile a stateless copy.
+    const pattern = new RegExp(event.source, event.flags.replace(/[gy]/g, ''));
+    return (name) => pattern.test(name);
+  }
   const literal = /^\/(.+)\/([a-z]*)$/.exec(event);
   if (literal) {
     let pattern: RegExp;

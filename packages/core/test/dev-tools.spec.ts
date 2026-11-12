@@ -98,6 +98,60 @@ describe('recent-events buffer', () => {
   });
 });
 
+describe('recent-events buffer: spans, paging, stateful patterns', () => {
+  it('keeps trace() span phases with spanId, result and error', async () => {
+    const { trace } = await import('../src/trace.js');
+    startRecentEvents(50);
+    trace('billing', 'charge', () => 42, { amount: 1 });
+    expect(() =>
+      trace('billing', 'refund', () => {
+        throw new TypeError('nope');
+      }),
+    ).toThrow();
+    await trace('billing', 'capture', async () => ({ ok: true }));
+    const events = recentEvents({ lib: 'billing', limit: 50 }).reverse();
+    expect(events.map((e) => `${e.event}:${e.phase}`)).toEqual([
+      'charge:start',
+      'charge:end',
+      'refund:start',
+      'refund:error',
+      'capture:start',
+      'capture:end',
+      'capture:asyncEnd',
+    ]);
+    expect(events[0]).toMatchObject({ payload: { amount: 1 } });
+    expect(events[1]).toMatchObject({ result: 42 });
+    expect(events[3]).toMatchObject({ error: { name: 'TypeError', message: 'nope' } });
+    expect(events[0]?.spanId).toBe(events[1]?.spanId);
+  });
+
+  it('pages with offset, and a /g RegExp filters deterministically', () => {
+    const buffer = startRecentEvents(50);
+    for (let i = 1; i <= 5; i++) emit('page', 'tick', { i });
+    const ids = (offset: number) =>
+      buffer.list({ limit: 2, offset }).map((e) => (e.payload as { i: number }).i);
+    expect([ids(0), ids(2), ids(4)]).toEqual([[5, 4], [3, 2], [1]]);
+    expect(recentEvents({ event: /tick/g, limit: 10 })).toHaveLength(5);
+  });
+
+  it('diagnostics_list_recent_events pages through the buffer', async () => {
+    startRecentEvents(50);
+    for (let i = 1; i <= 3; i++) emit('page', 'tick', { i });
+    const first = (await tools()('diagnostics_list_recent_events').run({ limit: 2 }, call)) as {
+      items: unknown[];
+      next: number | null;
+    };
+    expect(first.items).toHaveLength(2);
+    expect(first.next).toBe(2);
+    const second = (await tools()('diagnostics_list_recent_events').run(
+      { limit: 2, page: 2 },
+      call,
+    )) as { items: unknown[]; next: number | null };
+    expect(second).toMatchObject({ next: null });
+    expect(second.items).toHaveLength(1);
+  });
+});
+
 describe('diagnostics dev tools', () => {
   it('are read tools that follow the hub naming rules and the input subset', () => {
     const list = diagnosticsDevTools({ config: () => ({}) });
@@ -128,8 +182,15 @@ describe('diagnostics dev tools', () => {
         lib: 'billing',
         event: 'invoice-paid',
         subscribers: 0,
+        spanSubscribers: 0,
       },
-      { channel: 'agora:durable:run.failed', lib: 'durable', event: 'run.failed', subscribers: 1 },
+      {
+        channel: 'agora:durable:run.failed',
+        lib: 'durable',
+        event: 'run.failed',
+        subscribers: 1,
+        spanSubscribers: 0,
+      },
     ]);
     const silent = (await tools()('diagnostics_list_channels').run(
       { subscribed: false },

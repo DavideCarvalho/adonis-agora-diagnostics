@@ -64,12 +64,32 @@ function parseChannel(name: string): { lib: string; event: string } {
     : { lib: rest.slice(0, at), event: rest.slice(at + 1) };
 }
 
+/** The span sub-channels `trace()` publishes next to a base channel. */
+const SPAN_PHASES = ['start', 'end', 'asyncStart', 'asyncEnd', 'error'] as const;
+/** The ones the recent-events buffer listens to (it skips `asyncStart`). */
+const BUFFERED_PHASES: ReadonlySet<string> = new Set(['', 'start', 'end', 'asyncEnd', 'error']);
+
 /** Subscribers of a channel, when Node exposes the count; the recent-events buffer is not counted. */
-function subscriberCount(name: string): number | null {
-  const channel = diagnostics_channel.channel(name) as unknown as { _subscribers?: unknown[] };
-  if (!Array.isArray(channel._subscribers)) return null;
-  const own = recentEventsBuffer()?.started ? 1 : 0;
+function subscriberCount(name: string, phase = ''): number | null {
+  const channel = diagnostics_channel.channel(name) as unknown as {
+    _subscribers?: unknown[];
+    hasSubscribers: boolean;
+  };
+  // A channel nobody ever subscribed to has no subscriber list at all.
+  if (!Array.isArray(channel._subscribers)) return channel.hasSubscribers ? null : 0;
+  const own = recentEventsBuffer()?.started && BUFFERED_PHASES.has(phase) ? 1 : 0;
   return Math.max(0, channel._subscribers.length - own);
+}
+
+/** Subscribers across the `trace()` span sub-channels of `base`. */
+function spanSubscriberCount(base: string): number | null {
+  let total = 0;
+  for (const phase of SPAN_PHASES) {
+    const count = subscriberCount(`${base}:${phase}`, phase);
+    if (count === null) return null;
+    total += count;
+  }
+  return total;
 }
 
 function describeTransport(deps: DiagnosticsDevToolsDeps) {
@@ -91,7 +111,8 @@ export function diagnosticsDevTools(deps: DiagnosticsDevToolsDeps): DevTool[] {
       kind: 'read',
       description:
         'Every agora:<lib>:<event> diagnostics channel this process has seen, with its lib, event and ' +
-        'how many subscribers it has (0 = emitting it costs nothing). Paged: { items, next }.',
+        'how many subscribers it has for emit() events and for trace() spans (0 = publishing it ' +
+        'costs nothing). Paged: { items, next }.',
       input: {
         type: 'object',
         properties: {
@@ -110,12 +131,13 @@ export function diagnosticsDevTools(deps: DiagnosticsDevToolsDeps): DevTool[] {
           .sort()
           .map((channel) => {
             const subscribers = subscriberCount(channel);
-            return { channel, ...parseChannel(channel), subscribers };
+            const spanSubscribers = spanSubscriberCount(channel);
+            return { channel, ...parseChannel(channel), subscribers, spanSubscribers };
           })
           .filter((c) => only === undefined || c.lib === only)
           .filter((c) =>
             typeof input.subscribed === 'boolean'
-              ? (c.subscribers ?? 0) > 0 === input.subscribed
+              ? (c.subscribers ?? 0) + (c.spanSubscribers ?? 0) > 0 === input.subscribed
               : true,
           );
         return pageOf(items, input);
@@ -147,8 +169,9 @@ export function diagnosticsDevTools(deps: DiagnosticsDevToolsDeps): DevTool[] {
       name: 'diagnostics_list_recent_events',
       kind: 'read',
       description:
-        'The newest diagnostics events of the process that answers (lib, event, traceId, payload cut to ' +
-        '2 KB, secret-looking keys redacted). Filter by lib, event (exact, or /regex/) and traceId.',
+        'The newest diagnostics events of the process that answers, newest first: emit() events and ' +
+        'trace() span phases (phase, spanId, result, error), payloads cut to 2 KB with secret-looking ' +
+        'keys redacted. Filter by lib, event (exact, or /regex/) and traceId. Paged: { items, next }.',
       input: {
         type: 'object',
         properties: {
@@ -159,6 +182,7 @@ export function diagnosticsDevTools(deps: DiagnosticsDevToolsDeps): DevTool[] {
           },
           traceId: { type: 'string', description: 'Only events of this trace.' },
           limit,
+          page,
         },
       },
       async run(input) {
@@ -169,15 +193,18 @@ export function diagnosticsDevTools(deps: DiagnosticsDevToolsDeps): DevTool[] {
         const libFilter = str(input.lib);
         const event = str(input.event);
         const traceId = str(input.traceId);
-        const items = buffer.list({
+        const size = intOf(input.limit, 20, 100);
+        const number = intOf(input.page, 1);
+        const window = buffer.list({
           ...(libFilter !== undefined ? { lib: libFilter } : {}),
           ...(event !== undefined ? { event } : {}),
           ...(traceId !== undefined ? { traceId } : {}),
-          limit: intOf(input.limit, 20, 100),
+          limit: size + 1,
+          offset: (number - 1) * size,
         });
         return {
-          items,
-          next: null,
+          items: window.slice(0, size),
+          next: window.length > size ? number + 1 : null,
           enabled: true,
           scope: 'this process',
           buffered: buffer.count,

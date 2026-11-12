@@ -33,6 +33,8 @@ jobs:
       # publint + arethetypeswrong against every published package, on the built output.
       - run: pnpm check:package
 
+      - run: pnpm check:agora-doctor
+
   # Lint, typecheck, build and the package checks run once on the pinned Node above; only the
   # test suite fans out across the Node lines we test (24 and 26).
   test:

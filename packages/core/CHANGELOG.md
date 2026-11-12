@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 1.0.0-rc.3
+
+### Minor Changes
+
+- [#140](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/140) [`d4a9d49`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/d4a9d49a4e33489399374c95c6070ef65d9b3712) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Dev MCP tools on `@adonis-agora/agent`'s `/mcp/agora` endpoint (gated by its `devTools.authorize`): `diagnostics_list_channels`, `diagnostics_list_listeners`, `diagnostics_list_recent_events`. New recent-events buffer (`recentEvents()`, `recent` option: on outside production with the dev tools, off in production unless set), `devTools` option, and `transportInfo()` to tell which built-in transport a provider is.
+
 ## 1.0.0-rc.2
 
 ### Minor Changes

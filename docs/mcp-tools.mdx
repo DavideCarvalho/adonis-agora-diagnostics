@@ -1,0 +1,71 @@
+---
+title: MCP tools
+description: Let your coding agent see which diagnostics channels exist, who listens to them, and the last events your app emitted, over the Agora dev MCP endpoint.
+icon: Terminal
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+With [`@adonis-agora/agent`](/docs/agent)'s MCP provider installed, diagnostics adds read-only tools
+to the developer MCP endpoint (`/mcp/agora`), next to the other Agora libraries' tools. Connect
+Claude Code (or any MCP client) as the [agent docs](/docs/agent/dev-tools) show, then ask things
+like *"which listeners run on durable events?"* or *"what did the app emit for trace abc123?"*.
+
+| Tool | What it returns |
+| --- | --- |
+| `diagnostics_list_channels` | every `agora:<lib>:<event>` channel seen, with its subscriber count (`lib`, `subscribed`, `limit`, `page`) |
+| `diagnostics_list_listeners` | your listeners (id, lib, event, method) and the transport that runs them (`lib`, `limit`, `page`) |
+| `diagnostics_list_recent_events` | the newest events of the process that answered (`lib`, `event` exact or `/regex/`, `traceId`, `limit`) |
+
+Lists return `{ items, next }`: pass `next` as `page` to get the following page.
+
+## Recent events
+
+`diagnostics_list_recent_events` reads an in-memory buffer of the last 500 events. Payloads are cut
+to 2 KB and keys that look like secrets (`token`, `password`, `apiKey`…) are redacted.
+
+The buffer runs outside production when the dev tools are installed. In production it is off by
+default, because it listens to every channel and so every `emit` builds its event. Turn it on (or
+off) in `config/diagnostics.ts`:
+
+```ts title="config/diagnostics.ts"
+export default defineConfig({
+  recent: { size: 1000 }, // on everywhere, 1000 events
+  // recent: false,       // off, even in development
+})
+```
+
+Read it from code too:
+
+```ts
+import { recentEvents } from '@adonis-agora/diagnostics'
+
+recentEvents({ lib: 'durable', event: '/run\\.failed/', limit: 10 })
+```
+
+<Callout type="info">
+The buffer belongs to the process that answers the MCP request. For history across processes, use
+[Telescope](/docs/telescope).
+</Callout>
+
+## Who may use them
+
+Diagnostics has no console, so the endpoint's `devTools.authorize` in `config/mcp.ts` decides.
+Without it the tools are open outside production and refused in production:
+
+```ts title="config/mcp.ts"
+import env from '#start/env'
+import { authorizeByToken } from '@adonis-agora/agent'
+import { defineMcpConfig } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  // …your product endpoint…
+  devTools: {
+    authorize: authorizeByToken({ token: env.get('CONSOLE_TOKEN') }),
+  },
+})
+```
+
+`devTools: false` in `config/diagnostics.ts` leaves the tools out.

@@ -3,20 +3,22 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import type { DiagnosticsConfig } from '../src/define_config.js';
 import { DEV_TOOLS_BINDING } from '../src/dev_tools/contract.js';
 import { registerDiagnosticsDevTools } from '../src/dev_tools/tools.js';
+import { registerDoctorChecks } from '../src/doctor/agora_doctor.js';
+import { diagnosticsDoctorChecks } from '../src/doctor/checks.js';
 import { discoverListeners } from '../src/listener_discovery.js';
 import {
   bindListenerInvoker,
   createListenerInvoker,
   startListenerDispatch,
 } from '../src/listener_dispatch.js';
+import { DEFAULT_LISTENERS_PATH } from '../src/listener_paths.js';
 import { loadListeners, registeredListeners } from '../src/listeners.js';
 import { DEFAULT_RECENT_SIZE, startRecentEvents, stopRecentEvents } from '../src/recent.js';
 import { assertRoleHasTransport, resolveRole } from '../src/role.js';
 import { unsubscribeAll } from '../src/subscriber.js';
 import type { TransportHandle } from '../src/transports/factory.js';
 
-/** Where listener classes are discovered by default, relative to the app root. */
-export const DEFAULT_LISTENERS_PATH = 'app/listeners/diagnostics';
+export { DEFAULT_LISTENERS_PATH } from '../src/listener_paths.js';
 
 /**
  * Wires `@adonis-agora/diagnostics` into the AdonisJS application.
@@ -32,6 +34,7 @@ export const DEFAULT_LISTENERS_PATH = 'app/listeners/diagnostics';
  *    re-emitter, no process invoker, and listeners never run here.
  * 4. **Dev tools** (boot) — register the diagnostics tools on `@adonis-agora/agent`'s dev MCP
  *    endpoint when it is installed, and start the recent-events buffer (see `recent`).
+ *    It also registers the diagnostics `agora:doctor` checks.
  * 5. **Lifecycle** (shutdown) — stop the transport and every subscription.
  *
  * The trace-id auto-fill is wired from the other side: `@adonis-agora/context`'s provider
@@ -47,6 +50,7 @@ export default class DiagnosticsProvider {
 
   async boot() {
     const config = this.app.config.get<DiagnosticsConfig | undefined>('diagnostics', {}) ?? {};
+    await registerDoctorChecks(this.app.container as never, diagnosticsDoctorChecks());
     await this.#bootDevTools(config);
     if (config.otel === false) return;
     // Dynamic so the @opentelemetry/api-importing bridge never loads without an

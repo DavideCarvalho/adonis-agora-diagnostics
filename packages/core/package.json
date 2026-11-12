@@ -51,6 +51,16 @@
       "types": "./dist/src/delivery.d.ts",
       "import": "./dist/src/delivery.js",
       "default": "./dist/src/delivery.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/main.d.ts",
+      "import": "./dist/commands/main.js",
+      "default": "./dist/commands/main.js"
+    },
+    "./doctor": {
+      "types": "./dist/src/doctor/index.d.ts",
+      "import": "./dist/src/doctor/index.js",
+      "default": "./dist/src/doctor/index.js"
     }
   },
   "files": [
@@ -77,12 +87,13 @@
     "**/relayed.ts"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && pnpm run copy:stubs",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.commands.json && pnpm run copy:stubs",
     "copy:stubs": "mkdir -p dist/stubs/start dist/stubs/config && cp stubs/start/diagnostics.stub dist/stubs/start/diagnostics.stub && cp stubs/config/diagnostics.stub dist/stubs/config/diagnostics.stub",
     "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.commands.json --noEmit",
+    "check:agora-doctor": "node ../../scripts/check-agora-doctor.mjs ."
   },
   "peerDependencies": {
     "@adonis-agora/durable": ">=1.0.0 <2.0.0 || >=1.0.0-rc.0 <2.0.0",

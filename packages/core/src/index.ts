@@ -60,6 +60,12 @@ export {
   registeredListeners,
 } from './listeners.js';
 export {
+  DEFAULT_RECENT_SIZE,
+  type RecentEvent,
+  type RecentEventsFilter,
+  recentEvents,
+} from './recent.js';
+export {
   onChannelRegistered,
   registerChannel,
   registeredChannels,
@@ -87,6 +93,7 @@ export {
   traceChannelNames,
   tracingChannel,
 } from './trace.js';
+export { type TransportInfo, type TransportKind, transportInfo } from './transports/factory.js';
 export {
   bindRelayReEmitter,
   createDiagnosticsQueueRelay,

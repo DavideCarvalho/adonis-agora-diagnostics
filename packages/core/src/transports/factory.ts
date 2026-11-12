@@ -147,7 +147,7 @@ function selection(forward: ChannelSelection) {
 export const transports = {
   /** Relay diagnostics events across processes over `@adonisjs/redis` pub/sub. */
   redis(config: RedisTransportConfig = {}): TransportProvider {
-    return async (ctx) => {
+    return tagTransport('redis', config, async (ctx) => {
       const redisService = (await import('@adonisjs/redis/services/main')).default;
       const { createDiagnosticsRedisRelay, settle } = await import('./redis.js');
 
@@ -195,7 +195,7 @@ export const transports = {
           // best-effort teardown — never throw out of a shutdown hook
         }
       };
-    };
+    });
   },
 
   /**
@@ -203,7 +203,7 @@ export const transports = {
    * handler throws. Also relays the `forward` channels onto a worker's local bus.
    */
   queue(config: QueueTransportConfig = {}): TransportProvider {
-    return async (ctx) => {
+    return tagTransport('queue', config, async (ctx) => {
       const { Locator } = await import('@adonisjs/queue');
       const { default: DiagnosticsEventJob } = await import('./diagnostics_event_job.js');
       const { default: DiagnosticsListenerJob } = await import('./diagnostics_listener_job.js');
@@ -258,7 +258,7 @@ export const transports = {
         stop: stopRelay,
       };
       return handle;
-    };
+    });
   },
 
   /**
@@ -268,7 +268,7 @@ export const transports = {
    * not configured.
    */
   durable(config: DurableTransportConfig = {}): TransportProvider {
-    return async (ctx) => {
+    return tagTransport('durable', config, async (ctx) => {
       let durable: DurableDiagnosticsModule;
       try {
         durable = await loadDurable();
@@ -297,6 +297,37 @@ export const transports = {
         },
         config,
       );
-    };
+    });
   },
 };
+
+/** The built-in transport a {@link TransportProvider} was made by. */
+export type TransportKind = 'redis' | 'queue' | 'durable';
+
+const TRANSPORT_INFO = Symbol.for('@agora/diagnostics:transport-info');
+
+/** What {@link transportInfo} reads off a provider built by {@link transports}. */
+export interface TransportInfo {
+  kind: TransportKind;
+  options: Readonly<RedisTransportConfig | QueueTransportConfig | DurableTransportConfig>;
+}
+
+function tagTransport(
+  kind: TransportKind,
+  options: RedisTransportConfig | QueueTransportConfig | DurableTransportConfig,
+  provider: TransportProvider,
+): TransportProvider {
+  Object.defineProperty(provider, TRANSPORT_INFO, {
+    value: { kind, options: { ...options } } satisfies TransportInfo,
+  });
+  return provider;
+}
+
+/**
+ * Which built-in transport (`redis`, `queue`, `durable`) and options a provider of
+ * `config/diagnostics.ts` was made with; `undefined` for a custom provider.
+ */
+export function transportInfo(provider: unknown): TransportInfo | undefined {
+  if (typeof provider !== 'function') return undefined;
+  return (provider as unknown as Record<symbol, TransportInfo | undefined>)[TRANSPORT_INFO];
+}

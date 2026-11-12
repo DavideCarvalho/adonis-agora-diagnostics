@@ -43,6 +43,21 @@ export interface DiagnosticsConfig {
   listenersPath?: string | false;
   /** Named cross-process transports, built with the {@link transports} factory. */
   transports?: Record<string, TransportProvider>;
+  /**
+   * Keep the last events of this process in memory, for `recentEvents()` and the
+   * `diagnostics_list_recent_events` dev tool. It subscribes to every channel, so `emit` always
+   * builds its envelope while it runs.
+   *
+   * Default: on outside production when `@adonis-agora/agent`'s dev tools are installed, off
+   * otherwise. `true` or `{ size }` turns it on everywhere (default size 500); `false` turns it off.
+   */
+  recent?: boolean | { size?: number };
+  /**
+   * Developer tools on `@adonis-agora/agent`'s dev MCP endpoint (`/mcp/agora`), gated by its
+   * `devTools.authorize`. Default `true`; `false` leaves them out (and the default recent-events
+   * buffer with them).
+   */
+  devTools?: boolean;
 }
 
 /** Identity helper giving `config/diagnostics.ts` full type-checking. */

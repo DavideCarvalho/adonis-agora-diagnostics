@@ -10,6 +10,7 @@
     "consumers",
     "listeners",
     "transports",
+    "mcp-tools",
     "migrating-to-1-0",
     "---Integrations---",
     "opentelemetry",

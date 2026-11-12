@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { DiagnosticsConfig } from '../src/define_config.js';
+import { DEV_TOOLS_BINDING } from '../src/dev_tools/contract.js';
+import { registerDiagnosticsDevTools } from '../src/dev_tools/tools.js';
 import { discoverListeners } from '../src/listener_discovery.js';
 import {
   bindListenerInvoker,
@@ -8,6 +10,7 @@ import {
   startListenerDispatch,
 } from '../src/listener_dispatch.js';
 import { loadListeners, registeredListeners } from '../src/listeners.js';
+import { DEFAULT_RECENT_SIZE, startRecentEvents, stopRecentEvents } from '../src/recent.js';
 import { assertRoleHasTransport, resolveRole } from '../src/role.js';
 import { unsubscribeAll } from '../src/subscriber.js';
 import type { TransportHandle } from '../src/transports/factory.js';
@@ -27,7 +30,9 @@ export const DEFAULT_LISTENERS_PATH = 'app/listeners/diagnostics';
  *    (`queue`, `durable`) takes over listener execution; otherwise listeners run in-process.
  *    `config.role: 'api'` forwards and delivers but never consumes: no relay subscription, no
  *    re-emitter, no process invoker, and listeners never run here.
- * 4. **Lifecycle** (shutdown) — stop the transport and every subscription.
+ * 4. **Dev tools** (boot) — register the diagnostics tools on `@adonis-agora/agent`'s dev MCP
+ *    endpoint when it is installed, and start the recent-events buffer (see `recent`).
+ * 5. **Lifecycle** (shutdown) — stop the transport and every subscription.
  *
  * The trace-id auto-fill is wired from the other side: `@adonis-agora/context`'s provider
  * soft-detects this package at boot and registers its accessor via `setContextAccessor`.
@@ -41,8 +46,9 @@ export default class DiagnosticsProvider {
   constructor(protected app: ApplicationService) {}
 
   async boot() {
-    const config = this.app.config.get<{ otel?: boolean } | undefined>('diagnostics', {});
-    if (config?.otel === false) return;
+    const config = this.app.config.get<DiagnosticsConfig | undefined>('diagnostics', {}) ?? {};
+    await this.#bootDevTools(config);
+    if (config.otel === false) return;
     // Dynamic so the @opentelemetry/api-importing bridge never loads without an
     // OTel SDK present — keeping emit/trace OTel-free by default. Only the IMPORT
     // is allowed to fail (module-not-found = OTel absent); a real bug inside
@@ -55,6 +61,40 @@ export default class DiagnosticsProvider {
     }
     otel.start();
     this.#stopOtel = otel.stop;
+  }
+
+  /**
+   * Start the recent-events buffer (on outside production with the dev tools hub, or as `recent`
+   * says) and register the dev tools.
+   */
+  async #bootDevTools(config: DiagnosticsConfig) {
+    const container = this.app.container as { hasBinding?: (binding: string) => boolean };
+    const hub =
+      config.devTools !== false &&
+      typeof container.hasBinding === 'function' &&
+      container.hasBinding(DEV_TOOLS_BINDING);
+    const recent = config.recent;
+    if (recent === true || (typeof recent === 'object' && recent !== null)) {
+      startRecentEvents(
+        typeof recent === 'object' ? (recent.size ?? DEFAULT_RECENT_SIZE) : DEFAULT_RECENT_SIZE,
+      );
+    } else if (recent === undefined && hub && !this.app.inProduction) {
+      startRecentEvents();
+    }
+    if (!hub) return;
+    const outcome = await registerDiagnosticsDevTools(this.app.container as never, {
+      config: () => this.app.config.get<DiagnosticsConfig>('diagnostics', {}) ?? {},
+    });
+    if (outcome === 'unsupported' || outcome === 'failed') {
+      const logger = (await this.app.container.make('logger').catch(() => undefined)) as
+        | { debug(msg: string): void }
+        | undefined;
+      logger?.debug(
+        outcome === 'unsupported'
+          ? '[@adonis-agora/diagnostics] dev tools not registered: the installed @adonis-agora/agent cannot gate libs without a console (needs devTools.authorize support)'
+          : '[@adonis-agora/diagnostics] dev tools could not be registered',
+      );
+    }
   }
 
   async ready() {
@@ -135,6 +175,7 @@ export default class DiagnosticsProvider {
     this.#unbindInvoker = null;
     this.#stopOtel?.();
     this.#stopOtel = null;
+    stopRecentEvents();
     unsubscribeAll();
   }
 }

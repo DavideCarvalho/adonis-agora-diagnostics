@@ -19,6 +19,8 @@ like *"which listeners run on durable events?"* or *"what did the app emit for t
 
 Lists return `{ items, next }`: pass `next` as `page` to get the following page.
 
+The listener list is also a terminal command: `node ace diagnostics:listeners:list` (see [CLI](/docs/diagnostics/cli)).
+
 ## Recent events
 
 `diagnostics_list_recent_events` reads an in-memory buffer of the last 500 events: what `emit()`

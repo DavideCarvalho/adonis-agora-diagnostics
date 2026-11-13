@@ -38,7 +38,7 @@ node ace add @adonis-agora/diagnostics
 ```
 
 Configure leaves four things in the app: the provider and the `@adonis-agora/diagnostics/commands`
-barrel (`agora:doctor`, `diagnostics:doctor`) registered in `adonisrc.ts`,
+barrel (`agora:doctor`, `diagnostics:doctor`, `diagnostics:listeners:list`) registered in `adonisrc.ts`,
 `config/diagnostics.ts` (the `otel` flag and cross-process transports), and
 `start/diagnostics.ts` registered as a **preload file** so handlers subscribe before
 the app serves traffic:

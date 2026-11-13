@@ -119,6 +119,8 @@ Every listener has a stable id, which the `queue` and `durable` transports use t
 | in a preload, `[NotifyBilling, 'handle']` | `NotifyBilling#handle` |
 | in a preload, with `{ id: 'billing-audit' }` | `billing-audit` |
 
+`node ace diagnostics:listeners:list` prints every listener with its id (see [CLI](/docs/diagnostics/cli)).
+
 Renaming the file, class or method changes the id. Work already queued for the old id then fails with `E_UNKNOWN_DIAGNOSTICS_LISTENER`. To rename a listener that has queued work, register it in a preload with `{ id }` set to the old id until that work has drained.
 
 ## Handle each event once

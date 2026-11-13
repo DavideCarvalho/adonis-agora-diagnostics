@@ -92,12 +92,49 @@ function spanSubscriberCount(base: string): number | null {
   return total;
 }
 
-function describeTransport(deps: DiagnosticsDevToolsDeps) {
+/** The transport that runs the listeners and this process's role, as the listener list reports them. */
+export interface ListenerTransport {
+  /** The `config.default` transport name, `null` without one (listeners run in-process). */
+  name: string | null;
+  /** `local` (no transport), a built-in kind (`redis`, `queue`, `durable`) or `custom`. */
+  kind: string;
+  role: DiagnosticsRole;
+}
+
+/** One listener as `diagnostics_list_listeners` and `diagnostics:listeners:list` show it. */
+export interface ListenerSummary {
+  id: string;
+  lib: string;
+  /** The exact event, `String(regex)`, or `'*'` for every event of the lib. */
+  event: string;
+  method: string;
+}
+
+function describeTransport(deps: DiagnosticsDevToolsDeps): ListenerTransport {
   const config = deps.config();
   const role = config.role ?? 'all';
   if (!config.default) return { name: null, kind: 'local', role };
   const info = transportInfo(config.transports?.[config.default]);
   return { name: config.default, kind: info?.kind ?? 'custom', role };
+}
+
+/**
+ * The registered listeners (optionally of one lib) and the transport that runs them: what
+ * `diagnostics_list_listeners` pages and `node ace diagnostics:listeners:list` prints.
+ */
+export function listListeners(
+  deps: DiagnosticsDevToolsDeps,
+  filter: { lib?: string } = {},
+): { transport: ListenerTransport; items: ListenerSummary[] } {
+  const items = registeredListeners()
+    .filter((l) => filter.lib === undefined || l.lib === filter.lib)
+    .map((l) => ({
+      id: l.id,
+      lib: l.lib,
+      event: l.event === undefined ? '*' : l.event instanceof RegExp ? String(l.event) : l.event,
+      method: l.method,
+    }));
+  return { transport: describeTransport(deps), items };
 }
 
 const RECENT_OFF =
@@ -152,17 +189,9 @@ export function diagnosticsDevTools(deps: DiagnosticsDevToolsDeps): DevTool[] {
         "process's role. Paged: { items, next }.",
       input: { type: 'object', properties: { lib, limit, page } },
       async run(input) {
-        const only = str(input.lib);
-        const items = registeredListeners()
-          .filter((l) => only === undefined || l.lib === only)
-          .map((l) => ({
-            id: l.id,
-            lib: l.lib,
-            event:
-              l.event === undefined ? '*' : l.event instanceof RegExp ? String(l.event) : l.event,
-            method: l.method,
-          }));
-        return { transport: describeTransport(deps), ...pageOf(items, input) };
+        const lib = str(input.lib);
+        const { transport, items } = listListeners(deps, lib !== undefined ? { lib } : {});
+        return { transport, ...pageOf(items, input) };
       },
     },
     {

@@ -1,0 +1,51 @@
+---
+title: CLI
+description: List your diagnostics listeners and the transport that runs them from the terminal with node ace.
+icon: SquareTerminal
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+| Command | What it does |
+| --- | --- |
+| `diagnostics:listeners:list` | your listeners (id, lib, event, method), the transport that runs them and this process's role |
+| `diagnostics:doctor` | [health check](/docs/diagnostics/doctor) of the diagnostics setup |
+
+## Listing listeners
+
+```bash
+node ace diagnostics:listeners:list                  # every listener
+node ace diagnostics:listeners:list --lib=durable    # only listeners of durable events
+node ace diagnostics:listeners:list --size=20 --page=2
+node ace diagnostics:listeners:list --json
+```
+
+```
+Transport: jobs (queue) · role: all
+┌─────────────────────────────────────────────────┬─────────┬────────────────────────────┬───────────┐
+│ Id                                              │ Lib     │ Event                      │ Method    │
+├─────────────────────────────────────────────────┼─────────┼────────────────────────────┼───────────┤
+│ app/listeners/diagnostics/track_agent_run#handle │ agent   │ run.finished               │ handle    │
+│ NotifyBilling#handle                            │ durable │ /^run\.(failed|cancelled)$/ │ handle    │
+│ billing-audit                                   │ authkit │ *                          │ record    │
+└─────────────────────────────────────────────────┴─────────┴────────────────────────────┴───────────┘
+```
+
+The ids are the ones the `queue` and `durable` transports route work by (see [listener ids](/docs/diagnostics/listeners#listener-ids)). `*` means every event of the lib; a pattern is shown as `/regex/`.
+
+| Flag | |
+| --- | --- |
+| `--lib=<name>` | only listeners of this library |
+| `--page=<n>` | page number, from 1 |
+| `--size=<n>` | listeners per page (default 50, at most 1000) |
+| `--json` | print `{ transport, data, meta }`; `meta` has `total`, `page`, `size` and `hasNext` |
+
+The command exits with `1` on a bad `--page` or `--size`.
+
+<Callout type="info">
+Like every ace command that boots the app, it starts the transport from `config/diagnostics.ts` while it runs, and stops it when it ends.
+</Callout>
+
+## Channels and recent events
+
+There is no command for channels or recent events. Both describe the process that answers: channels appear once something emits or traces on them, and the recent-events buffer holds what that process emitted. A command process has emitted nothing, so it would always print an empty list. Ask the running app instead, through the [MCP tools](/docs/diagnostics/mcp-tools) (`diagnostics_list_channels`, `diagnostics_list_recent_events`), or use [Telescope](/docs/telescope) for history across processes.

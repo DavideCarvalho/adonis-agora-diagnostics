@@ -17,6 +17,8 @@ export interface RecentEvent {
   event: string;
   traceId?: string;
   durationMs?: number;
+  /** The tenant app the event is about, when the emitter named one. */
+  app?: string;
   /** The payload with secret-looking keys replaced, or a `{ truncated, bytes, preview }` cut. */
   payload: unknown;
   /** For `trace()` spans: the phase (`start`, `end`, `asyncEnd`, `error`). Absent on `emit` events. */
@@ -151,6 +153,7 @@ export class RecentEventsBuffer {
         event: envelope.event,
         ...(envelope.traceId !== undefined ? { traceId: envelope.traceId } : {}),
         ...(envelope.durationMs !== undefined ? { durationMs: envelope.durationMs } : {}),
+        ...('app' in envelope && typeof envelope.app === 'string' ? { app: envelope.app } : {}),
         payload: boundPayload(envelope.payload),
         ...(span !== null ? { phase: span.phase, spanId: span.spanId } : {}),
         ...(span !== null && span.result !== undefined

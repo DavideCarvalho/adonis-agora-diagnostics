@@ -33,6 +33,7 @@ interface DiagnosticEvent<TPayload = unknown> {
   traceId?: string;  // auto-filled from @adonis-agora/context when present
   payload: TPayload; // your library-defined data
   durationMs?: number; // wall-clock duration of the operation, when known
+  app?: string;      // the tenant app the event is about, when the emitter names one
 }
 ```
 

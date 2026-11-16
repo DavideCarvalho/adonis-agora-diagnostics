@@ -18,7 +18,12 @@ const out = await trace('durable', 'step', () => runStep(), { name })
 onDiagnostic('resilience', (event) => log(event))
 ```
 
-`traceId` auto-fills from `@adonis-agora/context` when installed. See the
+`traceId` auto-fills from `@adonis-agora/context` when installed.
+
+Pass `{ app: 'entre-textos' }` to name the tenant app an event is about
+(`[A-Za-z0-9_.-]{1,64}`; an invalid value is dropped, never thrown). The process that
+coordinates an action emits its event: when a control plane coordinates it, the control
+plane emits with `app` set to the tenant, and the tenant does not emit a duplicate. See the
 [repository README](https://github.com/DavideCarvalho/adonis-diagnostics).
 
 ## License

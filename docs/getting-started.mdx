@@ -75,6 +75,18 @@ It exists so an exporter can build a **histogram** — p50/p95/p99 of how long r
 
 Reach for `trace()` instead when you want the operation's start, end and failure as separate correlated events. Use `durationMs` when one event is enough and you already have the number.
 
+### Naming the app an event is about
+
+When an event belongs to a tenant app, pass `app`. It is stamped onto the envelope, relays carry it to other processes, and Telescope tags the event `app:<name>`:
+
+```ts
+emit('durable', 'run.failed', { runId }, { app: 'entre-textos' })
+```
+
+`app` must match `[A-Za-z0-9_.-]{1,64}`, the same syntax as a partition name. An invalid value is dropped and the event is still published without it; outside production, `emit` warns once per value. It never throws.
+
+The process that coordinates an action emits its event. When a control plane coordinates an action for a tenant, the control plane emits it with `app` set to the tenant's partition, and the tenant app does not emit a duplicate.
+
 ### Load-shedding a hot event
 
 For very hot call sites, pass a `sample` predicate. It is consulted *after* the `hasSubscribers` gate and *before* the envelope is built, so a dropped event allocates nothing. A throwing sampler is treated as a skip.
@@ -148,7 +160,7 @@ resolveTraceId()                    // → the current trace id, or undefined �
 
 | Export | Description |
 | --- | --- |
-| `emit(lib, event, payload, opts?)` | Publish a `DiagnosticEvent` on `agora:<lib>:<event>` (only when subscribed). `opts`: `traceId`, `sample`, `durationMs`. |
+| `emit(lib, event, payload, opts?)` | Publish a `DiagnosticEvent` on `agora:<lib>:<event>` (only when subscribed). `opts`: `traceId`, `sample`, `durationMs`, `app`. |
 | `trace(lib, event, fn, payload?, opts?)` | Run `fn` and publish span start/end/error phases with timing. Returns `fn`'s value. |
 | `tracingChannel(lib, event)` | A `trace` bound to one `(lib, event)` pair. |
 | `onDiagnostic(lib, event?, handler, opts?)` | Subscribe to one channel or every `agora:<lib>:*` channel. See [Consumers](/docs/diagnostics/consumers). |

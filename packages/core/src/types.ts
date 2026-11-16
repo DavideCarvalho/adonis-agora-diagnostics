@@ -42,6 +42,13 @@ export interface DiagnosticEvent<TPayload = unknown> {
    * timed operation. Stamped from {@link EmitOptions.durationMs} by `emit`.
    */
   durationMs?: number;
+  /**
+   * The tenant app this event is about, e.g. `'entre-textos'`. Stamped from
+   * {@link EmitOptions.app} by `emit`, only when given and valid
+   * (`[A-Za-z0-9_.-]{1,64}`); absent otherwise. Relays carry it unchanged. Observers such as
+   * Telescope tag the event `app:<name>`.
+   */
+  app?: string;
 }
 
 /**
@@ -195,6 +202,15 @@ export interface EmitOptions {
    * build duration histograms instead of only counters.
    */
   durationMs?: number;
+  /**
+   * The tenant app this event is about (its partition name), stamped onto the envelope as `app`.
+   * Must match `[A-Za-z0-9_.-]{1,64}`: an invalid value is dropped (the event is still published,
+   * without `app`) and, outside production, a warning is emitted once per value. Emit it from the
+   * process that coordinates the action: when a control plane coordinates it on behalf of a
+   * tenant, the control plane emits with `app` set to that tenant, and the tenant does not emit a
+   * duplicate.
+   */
+  app?: string;
 }
 
 /** Optional per-`trace` overrides. */

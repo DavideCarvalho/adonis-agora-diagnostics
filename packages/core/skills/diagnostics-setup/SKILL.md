@@ -3,7 +3,7 @@ name: diagnostics-setup
 description: >
   Emit and observe AdonisJS diagnostics events with @adonis-agora/diagnostics.
   Covers node ace configure, config/diagnostics.ts, the preloaded
-  start/diagnostics.ts, emit() POINT events with durationMs/sample opts, trace()
+  start/diagnostics.ts, emit() POINT events with durationMs/sample/app opts, trace()
   and tracingChannel() spans on agora:<lib>:<event>:start|end|asyncStart|asyncEnd|error,
   onDiagnostic wildcard/exact subscriptions with onError, unsubscribeAll lifecycle,
   channelName/traceChannelNames/getChannel, and asserting events in tests with
@@ -101,7 +101,23 @@ emit('authz', 'decision', payload, { sample: () => Math.random() < 0.1 })
 
 Source: `docs/getting-started.mdx` § Load-shedding a hot event
 
-### 3. Trace spans with `tracingChannel` for hot call sites
+### 3. Name the tenant app an event is about with `app`
+
+`app` lands on the envelope, relays carry it, and Telescope tags the event
+`app:<name>`. It must match `[A-Za-z0-9_.-]{1,64}`; an invalid value is dropped
+(the event still publishes) and `emit` never throws. The process that coordinates
+the action emits it: a control plane acting for a tenant emits with `app` set to
+the tenant, and the tenant does not emit a duplicate.
+
+```ts
+import { emit } from '@adonis-agora/diagnostics'
+
+emit('durable', 'run.failed', { runId }, { app: 'entre-textos' })
+```
+
+Source: `docs/getting-started.mdx` § Naming the app an event is about
+
+### 4. Trace spans with `tracingChannel` for hot call sites
 
 `trace` publishes five sub-channels (`…:start`, `…:end`, `…:asyncStart`,
 `…:asyncEnd`, `…:error`); every phase of one call shares a `spanId`, and `fn`'s
@@ -119,7 +135,7 @@ const result = await trace('durable', 'step', () => runStep(), { name })
 
 Source: `docs/getting-started.mdx` § Tracing spans, `packages/core/src/trace.ts`
 
-### 4. Assert events in tests
+### 5. Assert events in tests
 
 Events are only built when something is subscribed, so a test drops a collector first,
 exercises the code, then asserts. `resetRegistry()` gives registry-assertion tests a

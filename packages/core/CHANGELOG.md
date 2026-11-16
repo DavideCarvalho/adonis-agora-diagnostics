@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 1.0.0-rc.6
+
+### Minor Changes
+
+- [#154](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/154) [`6b04249`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/6b0424901834ab9f621977d9df4304bed0fec7bc) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - App attribution on the event envelope: `emit(lib, event, payload, { app })` stamps `app` (the tenant app the event is about) on the `DiagnosticEvent`. It must match `[A-Za-z0-9_.-]{1,64}`; an invalid value is dropped (the event is still published) with a warning outside production, and `emit` never throws. The Redis and queue relays carry `app` unchanged, and the recent-events buffer (`recentEvents()`, `diagnostics_list_recent_events`) keeps it. Events without `app` are unchanged.
+
 ## 1.0.0-rc.5
 
 ### Minor Changes

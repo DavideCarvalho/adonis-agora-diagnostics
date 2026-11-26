@@ -1,5 +1,60 @@
 # @adonis-agora/diagnostics
 
+## 1.0.0
+
+### Major Changes
+
+- [#130](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/130) [`986b098`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/986b098c8b7d53e0a42d7f64ac39c0080855f495) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - 1.0.0: the API is now stable and follows semver.
+  
+  Breaking changes:
+  
+  - Requires Node.js 24 or newer (`engines.node` is `>=24`); tested on Node.js 24 and 26.
+  
+  Also in this release:
+  
+  - The optional `@adonisjs/queue` peer now accepts `^0.6.0 || ^0.7.0`.
+  - Fix (patch): the Redis transport no longer crashes short-lived processes (such as `node ace list:routes`) with an unhandled `Error: Connection is closed.` when it shuts down before the subscriber connects. Pending Redis commands are now caught, and teardown unsubscribes, then QUITs a connected subscriber or disconnects one that is still connecting.
+  - No exports, functions, options or config keys were removed or renamed: code written against 0.3.x keeps working unchanged.
+  
+  See the "Migrating to 1.0" guide: https://davidecarvalho.github.io/agora/docs/diagnostics/migrating-to-1-0
+
+### Minor Changes
+
+- [#141](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/141) [`cb3c962`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/cb3c9623958a68b97b8c5cdc17b58965d198c2b9) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `node ace agora:doctor` (the shared Agora health check) and `node ace diagnostics:doctor`, with checks `diagnostics.transport`, `diagnostics.role`, `diagnostics.recent-buffer`, `diagnostics.listeners` and `diagnostics.otel`. New commands barrel `@adonis-agora/diagnostics/commands` (registered by `configure`; existing apps add it to `adonisrc.ts`) and `@adonis-agora/diagnostics/doctor` entry for `--no-boot`.
+
+- [#147](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/147) [`92e0e7b`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/92e0e7b32327ec821af38ad116682e17e8e53537) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - New `node ace diagnostics:listeners:list` (`--lib`, `--page`, `--size`, `--json`): the app's listeners with their ids and the transport and role that run them, the same data as the `diagnostics_list_listeners` dev tool (both now read `listListeners()`).
+
+- [#140](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/140) [`d4a9d49`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/d4a9d49a4e33489399374c95c6070ef65d9b3712) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Dev MCP tools on `@adonis-agora/agent`'s `/mcp/agora` endpoint (gated by its `devTools.authorize`): `diagnostics_list_channels`, `diagnostics_list_listeners`, `diagnostics_list_recent_events`. New recent-events buffer (`recentEvents()`, `recent` option: on outside production with the dev tools, off in production unless set), `devTools` option, and `transportInfo()` to tell which built-in transport a provider is.
+
+- [#154](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/154) [`6b04249`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/6b0424901834ab9f621977d9df4304bed0fec7bc) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - App attribution on the event envelope: `emit(lib, event, payload, { app })` stamps `app` (the tenant app the event is about) on the `DiagnosticEvent`. It must match `[A-Za-z0-9_.-]{1,64}`; an invalid value is dropped (the event is still published) with a warning outside production, and `emit` never throws. The Redis and queue relays carry `app` unchanged, and the recent-events buffer (`recentEvents()`, `diagnostics_list_recent_events`) keeps it. Events without `app` are unchanged.
+
+- [#135](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/135) [`31090ce`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/31090cec038522c53e531eb6880e1072cb5391c4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Listeners and delivering transports.
+  
+  - `@OnDiagnostic(lib, event?)` marks listener class methods; `event` is an exact name, a `RegExp`, or omitted for every event of the lib. Classes in `app/listeners/diagnostics` are registered at boot (`listenersPath` in the config, `false` to turn it off), and `onDiagnostic(lib, event, [Listener, 'method'])` registers one from a preload, with lazy imports. Each listener has a stable id (`<file>#<method>` or `<ClassName>#<method>`). Listener payloads are typed through the `ChannelRegistry` (`DiagnosticEventOf<lib, event>`), and so is the payload of `onDiagnostic(lib, event, fn)`.
+  - The selected transport decides how listeners run: in-process with no transport, in every process with `redis`, once in a worker with `queue` (one `agora.diagnostics.listener` job per listener and event, retried on error, new `retries` option, default 3), or as durable runs with the new `transports.durable(options)`. Delivering transports deliver once, from the emitting process, and never re-deliver relayed copies.
+  - `transports.durable()` loads `@adonis-agora/durable/diagnostics` only when it is the selected default, and fails at boot with a clear error when durable is not installed, too old, or not configured. `@adonis-agora/durable` is a new optional peer.
+  - Every `emit` and `trace` envelope carries a unique `id`, preserved by the relays.
+  - The listener delivery contract is typed in the new `@adonis-agora/diagnostics/delivery` subpath (types only): `ListenerDeliveryTransport`, `ListenerDelivery`, `DeliveryTransportContext`, `ListenerInvoker`, `DurableDiagnosticsModule`. A `TransportProvider` may now return a `TransportHandle` with `deliver` instead of a teardown function; teardown functions keep working.
+  - `onDiagnostic(fn)` observers and raw channel subscribers (Telescope, OpenTelemetry) are unchanged.
+
+- [`1007c60`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/1007c60bb719be1006e291d9ae20be06c3d967cc) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The Redis relay and the queue transport authenticate what they carry. Until now any message on `agora:diagnostics:relay` was re-emitted onto every process's bus, and any `agora.diagnostics.event` / `agora.diagnostics.listener` job in the queue was run, so whoever could publish on Redis or write into the queue backend could inject events that Telescope, the dev tools, metrics and listeners took as real, run any listener with input of their choosing, and grow each process's channel registry without bound.
+  
+  - **Same app: nothing to configure.** With no auth option, both transports authenticate with an AES-256-GCM key derived from the app's `APP_KEY` (HKDF-SHA256, purpose `agora:diagnostics:relay`; read from `config/app.ts`'s `appKey`, else the default entry of `config/encryption.ts`, else the `APP_KEY` environment variable; a string or a `Secret`). The processes of one app (web, workers) share it: no crypto server, no key to create, no grant, and nothing of an event is readable on Redis or in the queue. Boot logs `[@adonis-agora/diagnostics] redis relay: app key (auto)` (or `queue jobs: ...`).
+  - **Across apps:** `secret` (a shared secret of 16+ characters, the same in every process: an HMAC on every message), or an explicit `crypto: { cipher, key?, owns? }` (`@adonis-agora/crypto`, key `console-diagnostics` by default, or your own KMS; `owns` accepts another ciphertext format). `@adonis-agora/crypto` is never picked by itself. `crypto: false` turns the automatic `APP_KEY` mode off. `insecure: true` keeps the old unauthenticated wire for local development and warns at boot.
+  - **Breaking:** without an `APP_KEY` and with nothing configured (or `crypto: false` and nothing else), `transports.redis()` and `transports.queue()` refuse to start, naming `APP_KEY` first, then `secret`, then `crypto`. The check runs only where a transport starts (the provider's `ready`), never in ace commands that don't start the app. Boot logs and relay errors carry the `[@adonis-agora/diagnostics]` prefix.
+  - **Breaking:** the wire formats changed. Redis messages are `k1` (APP_KEY), `s1` (secret) or `c1` (crypto) frames; queue jobs carry `{ sealed }` instead of `{ node, env }` / `{ listenerId, env }` (both remain the payloads with `insecure: true`). Processes on this version drop messages and refuse jobs from older ones. `createDiagnosticsRedisRelay` and `createDiagnosticsQueueRelay` take the same `appKey` / `secret` / `crypto` / `insecure` options and throw without one (no automatic mode outside the AdonisJS transports).
+  - Redis messages over a minute old (or a minute ahead) and message ids already seen are dropped. A queue job is valid for `maxJobAgeMs` (default 24 hours) and its message is bound to the queue's job id: a retry of the same job passes, the same message in another job is refused as a replay. Event and listener jobs are sealed under different labels. Dropped messages and refused jobs are logged as warnings once per reason (`AGORA_DIAGNOSTICS_RELAY_REJECTED`, `AGORA_DIAGNOSTICS_QUEUE_JOB_REJECTED`), or passed to `onError`; a refused listener job is not retried.
+  - The Redis and queue relays re-emit only events whose `lib` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and `event` matches `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`, on a channel the process already knows or one of at most `maxRemoteChannels` (default 256) new ones. A relayed copy is never forwarded again by any relay in the process.
+  - `transportInfo()` no longer returns a transport's `appKey`, `secret` or `crypto`: `auth` names the mode (`auto`, `appKey`, `secret`, `crypto`, `insecure`, `none`). New `agora:doctor` checks: `diagnostics.relay-auth` (the resolved mode, e.g. `app key (auto)`; an error when the transport cannot authenticate, a warning for `insecure: true`) and the deep `diagnostics.relay-auth-key` (explicit `crypto` only: this process can encrypt and decrypt with the key).
+
+- [#138](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/138) [`817301a`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/817301a8f0ea5cfd9da70e6bc77bfcf4135fa7a0) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `role` in `config/diagnostics.ts`: which half of a split deployment this process is, the same `'all' | 'api' | 'worker'` as `@adonis-agora/payments`.
+  
+  - `'all'` (default) keeps today's behaviour.
+  - `'api'` emits, forwards through the `default` transport and hands listener work to it, but never consumes and never runs a listener: `redis` publishes without opening a subscriber, `queue` binds no re-emitter and no listener invoker (a listener job that lands there fails and is retried), `durable` starts the runs and leaves them to `durable:work` (set durable's `drive: false` on those processes). `onDiagnostic(fn)` observers still see the events the process emits.
+  - `'worker'` consumes and runs listeners, like `'all'`. The worker half is `node ace queue:work` for `queue`, `node ace durable:work` for `durable`, and any long-running process for `redis`; there is no `diagnostics:work` command.
+  - `'api'` and `'worker'` without a `default` transport fail at boot.
+  - `createDiagnosticsRedisRelay` and `createDiagnosticsQueueRelay` take `receive: false` for a forward-only relay (`sub` is then optional), and `TransportContext` carries `role` for custom transports.
+
 ## 1.0.0-rc.7
 
 ### Minor Changes

@@ -52,4 +52,6 @@ commands: [
 | `diagnostics.role` | `role: 'api'`/`'worker'` has a `default` transport; `forward` is not set without one | error / warn |
 | `diagnostics.recent-buffer` | `recent.size` is a positive integer; the [recent-events buffer](/docs/diagnostics/mcp-tools#recent-events) is not forced on in production | error / warn |
 | `diagnostics.listeners` | a custom `listenersPath` exists | warn |
+| `diagnostics.relay-auth` | the Redis or queue transport can authenticate its messages, as boot resolves it: `app key (auto)` (the app's `APP_KEY`), `secret`, `crypto (key …)`, or `insecure` (warn); an error without any (no `APP_KEY`, or `crypto: false`) | error / warn |
+| `diagnostics.relay-auth-key` | deep: with an explicit `crypto`, the key exists and this process encrypts and decrypts with it (the app must boot); skipped otherwise | error |
 | `diagnostics.otel` | the OpenTelemetry SDK packages are on one major line (`@adonisjs/otel` 2 is SDK 3) and `@opentelemetry/api` is installed once; reported by telescope instead when it is installed | error / warn |

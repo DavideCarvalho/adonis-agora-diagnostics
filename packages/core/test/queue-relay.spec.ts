@@ -24,7 +24,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('forwards a selected local event by dispatching a job', async () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'A' }),
+    );
 
     emit('resilience', 'circuit-opened', { key: 'payments' });
     await nextTurn();
@@ -38,7 +40,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('does not forward events of unselected libs', async () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'A' }),
+    );
 
     emit('durable', 'run.failed', { runId: 'r1' });
     await nextTurn();
@@ -48,7 +52,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('re-emits a queue-received event onto the local bus', () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'B' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'B' }),
+    );
     const local = vi.fn();
     getChannel('resilience', 'circuit-opened').subscribe((m) => local(m));
 
@@ -68,7 +74,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('suppresses its own echo (node === nodeId)', () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'A' }),
+    );
     const local = vi.fn();
     getChannel('resilience', 'circuit-opened').subscribe(() => local());
 
@@ -80,7 +88,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('round-trips an event through the queue without looping back', async () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'A' }),
+    );
     const onLocal = vi.fn();
     getChannel('resilience', 'circuit-opened').subscribe(() => onLocal());
 
@@ -108,6 +118,7 @@ describe('createDiagnosticsQueueRelay', () => {
     const job = new FakeJob();
     teardowns.push(
       createDiagnosticsQueueRelay({
+        insecure: true,
         job,
         channels: [{ lib: 'durable', event: 'run.failed' }],
         nodeId: 'A',
@@ -124,7 +135,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('forwards a future channel of a selected lib (onChannelRegistered)', async () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['authz'], nodeId: 'A' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['authz'], nodeId: 'A' }),
+    );
 
     // 'authz:decision' channel first registers at this emit, after the relay started
     emit('authz', 'decision', { allow: true });
@@ -136,7 +149,7 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('forwards every agora channel when all=true', async () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, all: true, nodeId: 'A' }));
+    teardowns.push(createDiagnosticsQueueRelay({ insecure: true, job, all: true, nodeId: 'A' }));
 
     emit('resilience', 'circuit-opened', {});
     emit('durable', 'run.failed', {});
@@ -147,7 +160,7 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('ignores malformed queue envelopes without throwing', () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, all: true, nodeId: 'A' }));
+    teardowns.push(createDiagnosticsQueueRelay({ insecure: true, job, all: true, nodeId: 'A' }));
     const reEmitter = getActiveReEmitter();
     expect(reEmitter).not.toBeNull();
     // missing env / wrong shapes must not throw
@@ -160,7 +173,13 @@ describe('createDiagnosticsQueueRelay', () => {
     job.rejectWith = new Error('queue down');
     const onDispatchError = vi.fn();
     teardowns.push(
-      createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A', onDispatchError }),
+      createDiagnosticsQueueRelay({
+        insecure: true,
+        job,
+        libs: ['resilience'],
+        nodeId: 'A',
+        onDispatchError,
+      }),
     );
 
     expect(() => emit('resilience', 'circuit-opened', {})).not.toThrow();
@@ -174,7 +193,12 @@ describe('createDiagnosticsQueueRelay', () => {
 
   it('stops forwarding and re-emitting after teardown', async () => {
     const job = new FakeJob();
-    const teardown = createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' });
+    const teardown = createDiagnosticsQueueRelay({
+      insecure: true,
+      job,
+      libs: ['resilience'],
+      nodeId: 'A',
+    });
 
     teardown();
 
@@ -189,7 +213,9 @@ describe('createDiagnosticsQueueRelay', () => {
   describe('forwarding off the emitter call stack', () => {
     it('returns from emit() before any job is dispatched', async () => {
       const job = new FakeBatchJob();
-      teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' }));
+      teardowns.push(
+        createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'A' }),
+      );
 
       emit('resilience', 'circuit-opened', { n: 1 });
       expect(job.dispatchCount).toBe(0);
@@ -201,7 +227,7 @@ describe('createDiagnosticsQueueRelay', () => {
 
     it('dispatches N events emitted in one turn with a single dispatchMany, in emit order', async () => {
       const job = new FakeBatchJob();
-      teardowns.push(createDiagnosticsQueueRelay({ job, all: true, nodeId: 'A' }));
+      teardowns.push(createDiagnosticsQueueRelay({ insecure: true, job, all: true, nodeId: 'A' }));
 
       for (let i = 0; i < 50; i++) {
         emit('durable', i % 2 === 0 ? 'run.started' : 'run.failed', { i });
@@ -220,7 +246,9 @@ describe('createDiagnosticsQueueRelay', () => {
 
     it('dispatches one job per event in order when the job has no dispatchMany', async () => {
       const job = new FakeJob();
-      teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' }));
+      teardowns.push(
+        createDiagnosticsQueueRelay({ insecure: true, job, libs: ['resilience'], nodeId: 'A' }),
+      );
 
       emit('resilience', 'circuit-opened', { n: 1 });
       emit('resilience', 'circuit-closed', { n: 2 });
@@ -233,7 +261,12 @@ describe('createDiagnosticsQueueRelay', () => {
 
     it('dispatches queued events synchronously on teardown', () => {
       const job = new FakeBatchJob();
-      const teardown = createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A' });
+      const teardown = createDiagnosticsQueueRelay({
+        insecure: true,
+        job,
+        libs: ['resilience'],
+        nodeId: 'A',
+      });
 
       emit('resilience', 'circuit-opened', { n: 1 });
       emit('resilience', 'circuit-closed', { n: 2 });
@@ -247,7 +280,13 @@ describe('createDiagnosticsQueueRelay', () => {
       job.rejectWith = new Error('queue down');
       const onDispatchError = vi.fn();
       teardowns.push(
-        createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A', onDispatchError }),
+        createDiagnosticsQueueRelay({
+          insecure: true,
+          job,
+          libs: ['resilience'],
+          nodeId: 'A',
+          onDispatchError,
+        }),
       );
 
       emit('resilience', 'circuit-opened', {});
@@ -268,7 +307,13 @@ describe('createDiagnosticsQueueRelay', () => {
         throw new Error('hook failed');
       });
       teardowns.push(
-        createDiagnosticsQueueRelay({ job, libs: ['resilience'], nodeId: 'A', onDispatchError }),
+        createDiagnosticsQueueRelay({
+          insecure: true,
+          job,
+          libs: ['resilience'],
+          nodeId: 'A',
+          onDispatchError,
+        }),
       );
       const uncaught = vi.fn();
       process.on('uncaughtException', uncaught);

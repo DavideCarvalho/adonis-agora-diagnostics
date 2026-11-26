@@ -4,13 +4,20 @@ import { pathToFileURL } from 'node:url';
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { DiagnosticsConfig } from '../define_config.js';
 import { DEFAULT_LISTENERS_PATH } from '../listener_paths.js';
+import { appKeyOf, relayModeLabel } from '../transports/auto_auth.js';
 import {
   DURABLE_NOT_CONFIGURED,
   DURABLE_NOT_INSTALLED,
   DURABLE_OUTDATED,
-  type RedisTransportConfig,
+  transportAuthOf,
   transportInfo,
 } from '../transports/factory.js';
+import {
+  missingRelayAuth,
+  RELAY_CRYPTO_KEY,
+  type RelayCipher,
+  type RelayCryptoOptions,
+} from '../transports/relay_auth.js';
 import {
   type AgoraDoctorCheck,
   type AgoraDoctorResult,
@@ -93,7 +100,7 @@ async function checkDurable(app: ApplicationService, name: string): Promise<Agor
 async function checkRedis(
   app: ApplicationService,
   name: string,
-  options: RedisTransportConfig,
+  options: { connection?: string },
 ): Promise<AgoraDoctorResult> {
   if ((await packageDir('@adonisjs/redis', app.makePath())) === null) {
     return {
@@ -124,7 +131,10 @@ async function checkRedis(
       docs: `${DOCS}/transports`,
     };
   }
-  return { status: 'ok', message: `default transport "${name}" (redis, connection ${connection})` };
+  return {
+    status: 'ok',
+    message: `default transport "${name}" (redis, connection ${connection}); authentication: see diagnostics.relay-auth`,
+  };
 }
 
 async function checkQueue(app: ApplicationService, name: string): Promise<AgoraDoctorResult> {
@@ -148,6 +158,127 @@ async function checkQueue(app: ApplicationService, name: string): Promise<AgoraD
     status: 'ok',
     message: `default transport "${name}" (queue): run \`node ace queue:work\` to deliver to listeners`,
   };
+}
+
+const AUTH_DOCS = `${DOCS}/transports#authenticating-the-relay`;
+const PROBE = 'agora-doctor:diagnostics-relay';
+
+/** Encrypt then decrypt a probe with `key`: proves this process may use it both ways. */
+async function probeCipher(
+  cipher: RelayCipher,
+  key: string,
+  owns?: (ciphertext: string) => boolean,
+): Promise<string | null> {
+  try {
+    const { ciphertext } = await cipher.encrypt({ key, plaintext: PROBE, aad: PROBE });
+    const owned = owns ? owns(ciphertext) : ciphertext.startsWith(`agora:ct1:${key}:`);
+    if (!owned)
+      return `the cipher did not return a "${key}" ciphertext (set crypto.owns for another format)`;
+    const { plaintext } = await cipher.decrypt({ key, ciphertext, aad: PROBE, context: PROBE });
+    return plaintext === PROBE ? null : 'the probe did not decrypt to itself';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** The selected Redis or queue transport, with what it is configured to authenticate with. */
+function relayOf(app: ApplicationService) {
+  const config = configOf(app);
+  const name = config.default;
+  const provider = name ? config.transports?.[name] : undefined;
+  const kind = transportInfo(provider)?.kind;
+  if (!name || (kind !== 'redis' && kind !== 'queue')) return null;
+  const auth = transportAuthOf(provider) ?? {};
+  return { name, kind, auth, label: `default transport "${name}" (${kind})` };
+}
+
+/**
+ * `diagnostics.relay-auth`: the mode the Redis or queue transport resolves, as boot does (reads
+ * config and the environment only).
+ */
+async function checkRelayAuth(app: ApplicationService): Promise<AgoraDoctorResult> {
+  const relay = relayOf(app);
+  if (!relay) return { status: 'skip', message: 'no Redis or queue transport selected' };
+  const { auth, kind, label } = relay;
+  const what = kind === 'redis' ? 'the Redis relay' : 'the queue transport';
+  const short = (value: unknown) => typeof value === 'string' && value.length < 16;
+  if (auth.secret !== undefined && short(auth.secret)) {
+    return {
+      status: 'error',
+      message: `${label}: the relay secret is shorter than 16 characters, so the app fails to boot`,
+      fix: 'Use a long random secret, the same in every process',
+      docs: AUTH_DOCS,
+    };
+  }
+  if (auth.insecure === true && !auth.crypto && auth.secret === undefined) {
+    return {
+      status: 'warn',
+      message:
+        kind === 'redis'
+          ? `${label} runs with insecure: true: anyone who can publish on Redis can inject diagnostics events`
+          : `${label} runs with insecure: true: anyone who can write jobs into the queue backend can inject events and run listeners with their own input`,
+      fix: "Remove `insecure` (the app's APP_KEY authenticates the relay automatically), or set `secret`",
+      docs: AUTH_DOCS,
+    };
+  }
+  const explicit = relayModeLabel(auth);
+  if (explicit !== undefined) return { status: 'ok', message: `${label}: ${explicit}` };
+  if (auth.crypto !== false) {
+    const appKey = await appKeyOf(app);
+    if (appKey !== undefined) {
+      const raw = typeof appKey === 'string' ? appKey : appKey.release();
+      if (raw.length < 16) {
+        return {
+          status: 'error',
+          message: `${label}: APP_KEY is shorter than 16 characters, so the relay refuses to start`,
+          fix: 'Generate one with `node ace generate:key`',
+          docs: AUTH_DOCS,
+        };
+      }
+      return { status: 'ok', message: `${label}: app key (auto)` };
+    }
+  }
+  return {
+    status: 'error',
+    message: `${label} has no way to authenticate its messages: it refuses to start`,
+    fix: missingRelayAuth(what, auth.crypto === false).replace('[@adonis-agora/diagnostics] ', ''),
+    docs: AUTH_DOCS,
+  };
+}
+
+/**
+ * `diagnostics.relay-auth-key` (deep): with an explicit `crypto`, the key exists and this process
+ * can encrypt and decrypt with it. The automatic `APP_KEY` mode has no key to probe.
+ */
+async function checkRelayAuthKey(app: ApplicationService): Promise<AgoraDoctorResult> {
+  const relay = relayOf(app);
+  if (!relay) return { status: 'skip', message: 'no Redis or queue transport selected' };
+  const { auth, label } = relay;
+  if (!auth.crypto) return { status: 'skip', message: `${label} does not use a crypto key` };
+  if ((app as { isBooted?: boolean }).isBooted !== true) {
+    return { status: 'skip', message: 'the crypto key is not probed without booting' };
+  }
+  const crypto = auth.crypto as RelayCryptoOptions;
+  const key = crypto.key ?? RELAY_CRYPTO_KEY;
+  let cipher: RelayCipher;
+  try {
+    cipher = typeof crypto.cipher === 'function' ? await crypto.cipher() : crypto.cipher;
+  } catch (error) {
+    return {
+      status: 'error',
+      message: `${label}: the crypto cipher is not available (${error instanceof Error ? error.message : String(error)})`,
+      docs: AUTH_DOCS,
+    };
+  }
+  const problem = await probeCipher(cipher, key, crypto.owns);
+  return problem === null
+    ? { status: 'ok', message: `${label}: crypto key ${key}, encrypt and decrypt work` }
+    : {
+        status: 'error',
+        message: `${label}: crypto key "${key}" is not usable from this process: ${problem}`,
+        fix: `Create the key on the crypto server (\`node ace crypto:keys:create ${key} --type aes256-gcm --application <app>\`), and give every relaying process crypto:encrypt:${key} and crypto:decrypt:${key}`,
+        docs: AUTH_DOCS,
+      };
 }
 
 /** The doctor checks of `@adonis-agora/diagnostics` (ids frozen for 1.x). */
@@ -175,7 +306,7 @@ export function diagnosticsDoctorChecks(): AgoraDoctorCheck[] {
           case 'durable':
             return checkDurable(app, name);
           case 'redis':
-            return checkRedis(app, name, info.options as RedisTransportConfig);
+            return checkRedis(app, name, info.options as { connection?: string });
           case 'queue':
             return checkQueue(app, name);
           default:
@@ -298,6 +429,19 @@ export function diagnosticsDoctorChecks(): AgoraDoctorCheck[] {
         }
         return checkOtel(await readOtelInstall(root));
       },
+    },
+    {
+      id: 'diagnostics.relay-auth',
+      lib: 'diagnostics',
+      title: 'Relay authentication',
+      run: checkRelayAuth,
+    },
+    {
+      id: 'diagnostics.relay-auth-key',
+      lib: 'diagnostics',
+      title: 'Relay crypto key',
+      cost: 'deep',
+      run: checkRelayAuthKey,
     },
   ];
 }

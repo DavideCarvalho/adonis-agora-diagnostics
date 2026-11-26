@@ -3,10 +3,16 @@
  * package (`dist/`) the way the AdonisJS provider does — listeners, invoker, dispatch, transport —
  * against a real Redis, then talks to the spec over stdio:
  *
- *   stdout: one JSON object per line ({ ready }, { invoked }, { error })
- *   stdin:  `emit <json payload>` to emit `agora:agent:run.finished`, `stop` to shut down
+ *   stdout: one JSON object per line ({ ready }, { invoked }, { error }, { warned })
+ *   stdin:  `emit <json payload>` to emit `agora:agent:run.finished`, `stop` to shut down,
+ *           `forge <json payload>` (queue mode) to write listener jobs into the queue the way an
+ *           attacker with access to the backend would: one unsealed, one sealed with another
+ *           secret, and one genuine sealed payload dispatched twice (a copied job).
  *
- * argv: <mode: redis | queue> <role: web | worker | api> <name> <redisUrl> <namespace>
+ * argv: <mode: redis | queue> <role: web | worker | api> <name> <redisUrl> <namespace> [appKey]
+ *
+ * With an `appKey`, the relay authenticates with it (the automatic mode of an AdonisJS app: a key
+ * derived from APP_KEY) instead of the shared secret.
  *
  * `api` wires a `role: 'api'` process as the provider does: a publish-only relay, no re-emitter,
  * no process invoker, and listeners never run here.
@@ -15,7 +21,7 @@ import { realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const [mode, role, name, redisUrl, namespace] = process.argv.slice(2);
+const [mode, role, name, redisUrl, namespace, appKey] = process.argv.slice(2);
 const dist = new URL('../../../dist/src/', import.meta.url);
 const load = (path) => import(new URL(path, dist).href);
 
@@ -44,7 +50,13 @@ await loadListeners();
 const api = role === 'api';
 const invoke = createListenerInvoker((target) => new target());
 if (!api) bindListenerInvoker(invoke);
-const logger = { error: (obj, msg) => out({ error: msg ?? String(obj) }), warn() {}, info() {} };
+const SECRET = 'two-process-relay-secret';
+const auth = appKey ? { appKey } : { secret: SECRET };
+const logger = {
+  error: (obj, msg) => out({ error: msg ?? String(obj) }),
+  warn: (obj, msg) => out({ warned: msg ?? String(obj) }),
+  info() {},
+};
 const ctx = {
   app: { container: { make: async () => logger } },
   forward: { libs: ['agent'] },
@@ -69,6 +81,8 @@ if (mode === 'redis') {
     libs: ['agent'],
     nodeId: name,
     redisChannel,
+    ...auth,
+    onError: (error) => out({ warned: error.message }),
   });
   cleanups.push(stop, () => pub.quit());
   if (sub) cleanups.push(() => sub.quit());
@@ -89,7 +103,7 @@ if (mode === 'redis') {
   };
   if (role !== 'worker') await QueueManager.init(config);
 
-  const handle = await transports.queue({ queue: namespace, retries: 3 })(ctx);
+  const handle = await transports.queue({ queue: namespace, retries: 3, ...auth })(ctx);
   deliver = handle.deliver.bind(handle);
   cleanups.push(() => handle.stop());
 
@@ -119,8 +133,35 @@ if (!api || deliver) {
 
 out({ ready: true });
 
+async function forge(payload) {
+  const { default: ListenerJob } = await load('transports/diagnostics_listener_job.js');
+  const { createQueueJobAuth } = await load('transports/queue_auth.js');
+  const { registeredListeners } = await load('listeners.js');
+  const listenerId = registeredListeners()[0].id;
+  const env = {
+    v: 1,
+    id: `forged-${Date.now()}`,
+    ts: Date.now(),
+    lib: 'agent',
+    event: 'run.finished',
+    payload,
+  };
+  const hooks = { onReject() {}, onError() {} };
+  const item = { listenerId, env };
+  // 1. unsealed, 2. sealed with a secret the workers do not hold
+  await ListenerJob.dispatch(item).toQueue(namespace);
+  const wrong = createQueueJobAuth({ secret: 'not-the-relay-secret-000' }, hooks);
+  await ListenerJob.dispatch(wrong.seal('listener', 'attacker', [item])[0]).toQueue(namespace);
+  // 3. a genuine sealed payload, written into the backend twice
+  const genuine = createQueueJobAuth({ secret: SECRET }, hooks);
+  const [sealed] = genuine.seal('listener', 'web', [{ listenerId, env: { ...env, id: 'copied' } }]);
+  await ListenerJob.dispatch(sealed).toQueue(namespace);
+  await ListenerJob.dispatch(sealed).toQueue(namespace);
+}
+
 for await (const line of createInterface({ input: process.stdin })) {
   if (line.startsWith('emit ')) emit('agent', 'run.finished', JSON.parse(line.slice(5)));
+  if (line.startsWith('forge ')) await forge(JSON.parse(line.slice(6)));
   if (line === 'stop') break;
 }
 for (const cleanup of cleanups) {

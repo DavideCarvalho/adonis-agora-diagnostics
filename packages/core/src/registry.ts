@@ -56,6 +56,11 @@ export function registerChannel(name: string): void {
   }
 }
 
+/** Whether `name` is already registered (without copying the registry). */
+export function isChannelRegistered(name: string): boolean {
+  return channels.has(name);
+}
+
 /** A snapshot of every `agora:<lib>:<event>` channel registered so far. */
 export function registeredChannels(): string[] {
   return [...channels];

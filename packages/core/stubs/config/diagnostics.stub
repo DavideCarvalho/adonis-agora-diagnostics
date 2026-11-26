@@ -63,6 +63,9 @@ export default defineConfig({
   // role: 'all',
   // forward: { libs: ['resilience', 'durable'] },
   // transports: {
+  //   // Redis messages and queue jobs are authenticated with the app's APP_KEY (nothing to
+  //   // configure). Across apps, add secret: env.get('DIAGNOSTICS_RELAY_SECRET') (the same in
+  //   // every process) to transports.redis(...) / transports.queue(...).
   //   redis: transports.redis({ connection: 'main' }),   // @adonisjs/redis + ioredis
   //   queue: transports.queue({ queue: 'diagnostics' }), // @adonisjs/queue
   //   durable: transports.durable({ retries: 5 }),        // @adonis-agora/durable

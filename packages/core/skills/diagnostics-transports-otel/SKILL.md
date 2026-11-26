@@ -6,7 +6,8 @@ description: >
   transports.redis/transports.queue factories with lazy peer imports
   (@adonisjs/redis + ioredis, @adonisjs/queue), forward ChannelSelection
   (libs/channels/all), node ace queue:work --queue= flag, worker-only processes,
-  getActiveReEmitter/bindRelayReEmitter, custom TransportProvider thunks with
+  getActiveReEmitter/bindRelayReEmitter, Redis relay and queue job authentication (automatic
+  APP_KEY, secret, explicit crypto or KMS, insecure) and maxRemoteChannels, custom TransportProvider thunks with
   createChannelSelector, createDiagnosticsRedisRelay/createDiagnosticsQueueRelay,
   and the /otel bridge (start/stop, DiagnosticsOtelBridge, BridgeOptions,
   recordClaimed, recordPointEvents, otelTraceparent). Use when events must reach
@@ -56,11 +57,32 @@ export default defineConfig({
   forward: { libs: ['resilience', 'durable'] }, // or { all: true }
 
   transports: {
+    // Authenticated automatically with the app's APP_KEY; across apps, add
+    // secret: env.get('DIAGNOSTICS_RELAY_SECRET') (same in every process) or crypto.
     redis: transports.redis({ connection: 'main' }),
     queue: transports.queue({ queue: 'diagnostics' }),
   },
 })
 ```
+
+The Redis relay authenticates every message, and the queue transport every job (event
+and listener jobs, sealed as `{ sealed }`). With nothing configured, both use an
+AES-256-GCM key derived from the app's `APP_KEY` (HKDF, purpose `agora:diagnostics:relay`;
+read from `app.appKey`, else `config/encryption.ts`'s default entry, else the env var):
+the processes of one app share it, so there is nothing to configure, no crypto server
+and no grant; boot logs `app key (auto)`. Across apps: `secret` (16+ chars, HMAC, same
+value in every process) or an explicit `crypto: { cipher, key?, owns? }`
+(@adonis-agora/crypto, or your own KMS; never picked by itself). `insecure: true` is
+local dev only (warns); `crypto: false` turns the automatic APP_KEY mode off. Without
+any, boot fails naming APP_KEY first. Redis messages over a minute old or already seen
+are dropped; a queue job is valid `maxJobAgeMs` (24 h) and bound to its job id (a retry
+passes, a copy in another job is refused). Received events re-emit only with valid
+`lib`/`event` names, on known channels or at most `maxRemoteChannels` (default 256) new
+ones. No authkit token mode: the relays are a broadcast with no reply. `agora:doctor`
+checks: `diagnostics.relay-auth`, deep `diagnostics.relay-auth-key` (explicit crypto
+only). None of authkit, authz or crypto is required.
+
+Source: `docs/transports.mdx` § Authenticating the relays
 
 With no `default`, diagnostics stays local-only — everything still works in-process
 (`role: 'api'`/`'worker'` still need a `default`; without one boot fails).
@@ -187,6 +209,26 @@ export default defineConfig({
 Mechanism: starting the transport is what binds the process re-emitter; without it the
 worker executes `agora.diagnostics.event` as a no-op.
 Source: `docs/transports.mdx` § Worker-only processes
+
+### [CRITICAL] A relay with no APP_KEY and no `secret`, or across apps on APP_KEY
+
+Without an `APP_KEY`, `transports.redis()` / `transports.queue()` with neither `secret`
+nor `crypto` throw at boot (and `agora:doctor` reports it). Processes with different
+`APP_KEY`s (different apps, or mid-rotation), different secrets, or one on `secret` and
+another on `crypto` silently drop each other's messages with a
+`AGORA_DIAGNOSTICS_RELAY_REJECTED` / `AGORA_DIAGNOSTICS_QUEUE_JOB_REJECTED` warning. Don't
+"fix" it with `insecure: true` outside local development: anyone who can publish on Redis
+or write jobs could then inject events and run listeners.
+
+```ts
+// Same app: nothing to add, the APP_KEY authenticates it
+redis: transports.redis({ connection: 'main' }),
+
+// Across apps — the same DIAGNOSTICS_RELAY_SECRET in every process on the channel
+redis: transports.redis({ connection: 'main', secret: env.get('DIAGNOSTICS_RELAY_SECRET') }),
+```
+
+Source: `docs/transports.mdx` § Authenticating the relays
 
 ### [HIGH] Passing the queue name positionally to `queue:work`
 

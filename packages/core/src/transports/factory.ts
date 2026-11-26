@@ -1,7 +1,8 @@
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { ChannelSelection } from '../relay.js';
-import type { DiagnosticsEventEnvelope } from './queue.js';
+import type { DiagnosticsEventJobPayload } from './queue.js';
 import type { RedisLike } from './redis.js';
+import type { RelaySecret } from './relay_auth.js';
 
 /**
  * Runtime context a {@link TransportProvider} receives when the diagnostics provider starts the
@@ -24,8 +25,21 @@ export interface TransportContext {
  */
 export type TransportProvider = (ctx: TransportContext) => Promise<() => void>;
 
+/** How the transports authenticate their messages (shared by both). */
+export interface TransportAuthConfig {
+  /**
+   * A secret every relaying process shares (at least 16 characters). Every message carries an HMAC
+   * under it. Default: a key derived from the app's `APP_KEY` (`config/app.ts` → `appKey`, else
+   * `process.env.APP_KEY`), which every process of the same app shares; set `secret` when processes
+   * of different apps relay to each other. Without either, the transport refuses to start.
+   */
+  secret?: RelaySecret;
+  /** How many new channels relayed events may create in each process. Default 256. */
+  maxRemoteChannels?: number;
+}
+
 /** Options for the Redis pub/sub transport. */
-export interface RedisTransportConfig {
+export interface RedisTransportConfig extends TransportAuthConfig {
   /** `@adonisjs/redis` connection name to relay over. Defaults to the default connection. */
   connection?: string;
   /** Redis channel to relay on. Default `agora:diagnostics:relay`. */
@@ -33,13 +47,46 @@ export interface RedisTransportConfig {
 }
 
 /** Options for the `@adonisjs/queue` transport. */
-export interface QueueTransportConfig {
+export interface QueueTransportConfig extends TransportAuthConfig {
+  /** How long a dispatched job stays valid, in milliseconds. Default 24 hours. */
+  maxJobAgeMs?: number;
   /**
    * `@adonisjs/queue` queue name to dispatch the relay job onto. A worker must process this queue —
    * `queue` is a FLAG on `queue:work`, not a positional argument, so it is
    * `node ace queue:work --queue={queue}`. Omit to use the job's default queue (`default`).
    */
   queue?: string;
+}
+
+/** The app's key: `config/app.ts` → `appKey`, else `process.env.APP_KEY`. */
+function appKeyOf(app: ApplicationService): RelaySecret | undefined {
+  try {
+    const configured = app.config.get<unknown>('app.appKey', undefined);
+    if (typeof configured === 'string' && configured !== '') return configured;
+    if (
+      configured &&
+      typeof configured === 'object' &&
+      typeof (configured as { release?: unknown }).release === 'function'
+    ) {
+      return configured as { release(): string };
+    }
+  } catch {
+    // no app config: fall back to the environment
+  }
+  const env = process.env.APP_KEY;
+  return env !== undefined && env !== '' ? env : undefined;
+}
+
+/** The auth options of a relay: the transport's `secret`, the app key, the channel bound. */
+function auth(config: TransportAuthConfig, app: ApplicationService) {
+  const appKey = appKeyOf(app);
+  return {
+    ...(config.secret !== undefined ? { secret: config.secret } : {}),
+    ...(appKey !== undefined ? { appKey } : {}),
+    ...(config.maxRemoteChannels !== undefined
+      ? { maxRemoteChannels: config.maxRemoteChannels }
+      : {}),
+  };
 }
 
 /** Spread the channel selection onto a relay options object, honoring `exactOptionalPropertyTypes`. */
@@ -77,6 +124,11 @@ export const transports = {
     return async (ctx) => {
       const redisService = (await import('@adonisjs/redis/services/main')).default;
       const { createDiagnosticsRedisRelay } = await import('./redis.js');
+      const { relayKey } = await import('./relay_auth.js');
+      const options = auth(config, ctx.app);
+      // Fail before opening a subscriber connection: no key, no relay.
+      relayKey(options, 'check', 'the Redis transport');
+      const logger = await ctx.app.container.make('logger');
 
       const connection = config.connection
         ? redisService.connection(
@@ -93,6 +145,9 @@ export const transports = {
         ...selection(ctx.forward),
         ...(config.redisChannel !== undefined ? { redisChannel: config.redisChannel } : {}),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
+        ...options,
+        onReject: (reason) =>
+          logger.warn(`[@adonis-agora/diagnostics] dropped a relayed message (${reason})`),
       });
 
       // The subscriber is a dedicated `duplicate()` connection created and owned
@@ -124,11 +179,11 @@ export const transports = {
 
       const queueName = config.queue;
       const job = {
-        dispatch(payload: DiagnosticsEventEnvelope) {
+        dispatch(payload: DiagnosticsEventJobPayload) {
           const dispatcher = DiagnosticsEventJob.dispatch(payload);
           return queueName ? dispatcher.toQueue(queueName) : dispatcher;
         },
-        dispatchMany(payloads: DiagnosticsEventEnvelope[]) {
+        dispatchMany(payloads: DiagnosticsEventJobPayload[]) {
           const dispatcher = DiagnosticsEventJob.dispatchMany(payloads);
           return queueName ? dispatcher.toQueue(queueName) : dispatcher;
         },
@@ -138,8 +193,12 @@ export const transports = {
         job,
         ...selection(ctx.forward),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
+        ...auth(config, ctx.app),
+        ...(config.maxJobAgeMs !== undefined ? { maxJobAgeMs: config.maxJobAgeMs } : {}),
         onDispatchError: (error) =>
           logger.error({ err: error }, 'failed to relay diagnostics event to queue'),
+        onReject: (reason) =>
+          logger.warn(`[@adonis-agora/diagnostics] refused a relayed job (${reason})`),
       });
     };
   },

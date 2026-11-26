@@ -69,6 +69,7 @@ export {
   createDiagnosticsQueueRelay,
   type DiagnosticsEventEnvelope,
   type DiagnosticsEventJobLike,
+  type DiagnosticsEventJobPayload,
   type DiagnosticsQueueRelayOptions,
   getActiveReEmitter,
   type RelayReEmitter,
@@ -78,6 +79,13 @@ export {
   type DiagnosticsRedisRelayOptions,
   type RedisLike,
 } from './transports/redis.js';
+export {
+  DEFAULT_MAX_JOB_AGE_MS,
+  DEFAULT_MAX_REMOTE_CHANNELS,
+  type RelayAuthOptions,
+  type RelayRejection,
+  type RelaySecret,
+} from './transports/relay_auth.js';
 export type {
   ChannelRegistry,
   DiagnosticEvent,

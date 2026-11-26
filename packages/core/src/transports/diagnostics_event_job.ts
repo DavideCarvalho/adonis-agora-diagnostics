@@ -1,5 +1,9 @@
 import { Job } from '@adonisjs/queue';
-import { type DiagnosticsEventEnvelope, getActiveReEmitter } from './queue.js';
+import {
+  type DiagnosticsEventJobPayload,
+  getActiveJobOpener,
+  getActiveReEmitter,
+} from './queue.js';
 
 /**
  * The `@adonisjs/queue` job that carries a relayed diagnostics event across processes.
@@ -17,13 +21,32 @@ import { type DiagnosticsEventEnvelope, getActiveReEmitter } from './queue.js';
  * Imports `@adonisjs/queue` at module load, so it is loaded lazily by `transports.queue(...)` rather
  * than from the package barrel — keeping `@adonisjs/queue` an optional peer dependency.
  */
-export default class DiagnosticsEventJob extends Job<DiagnosticsEventEnvelope> {
+export default class DiagnosticsEventJob extends Job<DiagnosticsEventJobPayload> {
   /** Stable name so dispatch/process resolve the same class regardless of bundling/minification. */
   static override options = { name: 'agora.diagnostics.event' };
 
   async execute(): Promise<void> {
     const reEmitter = getActiveReEmitter();
     if (!reEmitter) return; // no relay bound in this process — nothing to re-emit onto
-    reEmitter.reEmit(this.payload);
+    // Only an authentic, fresh job that is not a replay is re-emitted (see relay_auth.ts).
+    const open = getActiveJobOpener();
+    if (!open) return;
+    let envelope: ReturnType<typeof open>;
+    try {
+      envelope = open(this.payload, jobIdOf(this));
+    } catch {
+      return; // never throw into the worker
+    }
+    if (envelope) reEmitter.reEmit(envelope);
+  }
+}
+
+/** The queue's id of the running job (stable across its retries). */
+export function jobIdOf(job: object): string | undefined {
+  try {
+    const id = (job as { context?: { jobId?: unknown } }).context?.jobId;
+    return typeof id === 'string' ? id : undefined;
+  } catch {
+    return undefined;
   }
 }

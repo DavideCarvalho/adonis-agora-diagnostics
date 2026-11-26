@@ -2,6 +2,18 @@ import { randomUUID } from 'node:crypto';
 import { getChannel } from '../channel.js';
 import { type ChannelRef, createChannelSelector, createTurnBatcher } from '../relay.js';
 import type { DiagnosticEvent } from '../types.js';
+import {
+  createRemoteChannelGate,
+  DEFAULT_MAX_JOB_AGE_MS,
+  MAX_RELAY_SKEW_MS,
+  type RelayAuthOptions,
+  type RelayRejection,
+  ReplayGuard,
+  relayKey,
+  type SignedFrame,
+  signFrame,
+  verifyFrame,
+} from './relay_auth.js';
 
 export type { ChannelRef };
 
@@ -22,16 +34,19 @@ export interface DiagnosticsEventEnvelope {
  * `dispatch(payload)` returns an awaitable. Keeping it structural lets the relay be tested without a
  * queue backend.
  */
+/** What a diagnostics job carries: the envelope, signed (see `relay_auth.ts`). */
+export type DiagnosticsEventJobPayload = SignedFrame;
+
 export interface DiagnosticsEventJobLike {
-  dispatch(payload: DiagnosticsEventEnvelope): PromiseLike<unknown> | unknown;
+  dispatch(payload: DiagnosticsEventJobPayload): PromiseLike<unknown> | unknown;
   /**
    * When present, a turn's forwarded events are pushed with one call (still one job per event, e.g.
    * `Job.dispatchMany`) instead of one `dispatch` each.
    */
-  dispatchMany?(payloads: DiagnosticsEventEnvelope[]): PromiseLike<unknown> | unknown;
+  dispatchMany?(payloads: DiagnosticsEventJobPayload[]): PromiseLike<unknown> | unknown;
 }
 
-export interface DiagnosticsQueueRelayOptions {
+export interface DiagnosticsQueueRelayOptions extends RelayAuthOptions {
   /**
    * The job class used to forward events. Its `dispatch(envelope)` is called for each selected local
    * event. In an AdonisJS app this is the `DiagnosticsEventJob`, registered with `@adonisjs/queue`
@@ -52,6 +67,12 @@ export interface DiagnosticsQueueRelayOptions {
    * lets callers log the failure. Default: ignored.
    */
   onDispatchError?: (error: unknown) => void;
+  /** How long a dispatched job stays valid, in milliseconds. Default 24 hours. */
+  maxJobAgeMs?: number;
+  /** How many new channels relayed events may create in this process. Default 256. */
+  maxRemoteChannels?: number;
+  /** Called (once per reason) when a job is refused. */
+  onReject?: (reason: RelayRejection | 'invalid-channel' | 'too-many-channels') => void;
 }
 
 /**
@@ -73,12 +94,25 @@ export interface RelayReEmitter {
  */
 class ReEmitGuard implements RelayReEmitter {
   readonly reEmitting = new WeakSet<object>();
-  constructor(readonly nodeId: string) {}
+  readonly #gate: ReturnType<typeof createRemoteChannelGate>;
+  constructor(
+    readonly nodeId: string,
+    maxRemoteChannels?: number,
+    readonly onRefused?: (reason: 'invalid-channel' | 'too-many-channels') => void,
+  ) {
+    this.#gate = createRemoteChannelGate(maxRemoteChannels);
+  }
 
   reEmit(envelope: DiagnosticsEventEnvelope): void {
     if (envelope.node === this.nodeId) return; // our own echo
     const env = envelope.env;
-    if (!env || typeof env.lib !== 'string' || typeof env.event !== 'string') return;
+    if (!env || typeof env !== 'object') return;
+    // Well-formed names only, and a bounded number of new channels per process.
+    const admitted = this.#gate.admit(env.lib, env.event);
+    if (admitted !== 'ok') {
+      this.onRefused?.(admitted === 'invalid' ? 'invalid-channel' : 'too-many-channels');
+      return;
+    }
     this.reEmitting.add(env);
     try {
       getChannel(env.lib, env.event).publish(env);
@@ -115,6 +149,23 @@ export function getActiveReEmitter(): RelayReEmitter | null {
 }
 
 /**
+ * Opens a job a worker runs: the envelope when the job is authentic, fresh and not a replay
+ * (`jobId` lets the same job's retries through), else `null`.
+ */
+export type DiagnosticsJobOpener = (
+  payload: unknown,
+  jobId: string | undefined,
+) => DiagnosticsEventEnvelope | null;
+
+/** The opener bound by the queue relay of this process; without one a job runs nothing. */
+let activeJobOpener: DiagnosticsJobOpener | null = null;
+
+/** The job opener of this process, or `null` (the job then re-emits nothing). Used by the job. */
+export function getActiveJobOpener(): DiagnosticsJobOpener | null {
+  return activeJobOpener;
+}
+
+/**
  * Relay diagnostics events across processes over `@adonisjs/queue`. Forwards selected local
  * `agora:<lib>:<event>` channels by dispatching a job carrying `{ node, env }`; a worker running in
  * ANOTHER process executes that job and re-emits the event onto its local bus (see the
@@ -140,8 +191,36 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
   const nodeId = options.nodeId ?? randomUUID();
   const onDispatchError = options.onDispatchError;
 
-  const guard = new ReEmitGuard(nodeId);
+  // Every job is signed; without a key (no `secret`, no APP_KEY) the relay refuses to start.
+  const key = relayKey(options, 'queue:agora.diagnostics.event', 'the queue transport');
+  const maxJobAgeMs = options.maxJobAgeMs ?? DEFAULT_MAX_JOB_AGE_MS;
+  const replays = new ReplayGuard(maxJobAgeMs + 2 * MAX_RELAY_SKEW_MS);
+  const reported = new Set<string>();
+  const reject = (reason: Parameters<NonNullable<DiagnosticsQueueRelayOptions['onReject']>>[0]) => {
+    if (reported.has(reason)) return;
+    reported.add(reason);
+    try {
+      options.onReject?.(reason);
+    } catch {
+      // a throwing hook must never break the worker
+    }
+  };
+
+  const guard = new ReEmitGuard(nodeId, options.maxRemoteChannels, reject);
   const unbindReEmitter = bindRelayReEmitter(guard);
+  const opener: DiagnosticsJobOpener = (payload, jobId) => {
+    const frame = verifyFrame(key, payload, maxJobAgeMs);
+    if (typeof frame === 'string') {
+      reject(frame);
+      return null;
+    }
+    if (!replays.accept(frame.id, jobId)) {
+      reject('replayed');
+      return null;
+    }
+    return { node: frame.node, env: frame.env as DiagnosticEvent };
+  };
+  activeJobOpener = opener;
 
   const report = (err: unknown): void => {
     try {
@@ -164,11 +243,19 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
   };
 
   const batcher = createTurnBatcher<DiagnosticsEventEnvelope>((envelopes) => {
-    if (envelopes.length > 1 && typeof job.dispatchMany === 'function') {
-      fireAndReport(() => job.dispatchMany?.(envelopes));
+    const payloads: DiagnosticsEventJobPayload[] = [];
+    for (const envelope of envelopes) {
+      try {
+        payloads.push(signFrame(key, envelope.node, envelope.env));
+      } catch (err) {
+        report(err); // an unserializable event is dropped without affecting the rest
+      }
+    }
+    if (payloads.length > 1 && typeof job.dispatchMany === 'function') {
+      fireAndReport(() => job.dispatchMany?.(payloads));
       return;
     }
-    for (const envelope of envelopes) fireAndReport(() => job.dispatch(envelope));
+    for (const payload of payloads) fireAndReport(() => job.dispatch(payload));
   });
 
   const forward = (msg: unknown): void => {
@@ -183,5 +270,6 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
     batcher.flush();
     selector.stop();
     unbindReEmitter();
+    if (activeJobOpener === opener) activeJobOpener = null;
   };
 }

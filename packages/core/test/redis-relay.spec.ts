@@ -4,6 +4,7 @@ import { resetRegistry } from '../src/registry.js';
 import { createDiagnosticsRedisRelay } from '../src/transports/redis.js';
 import type { DiagnosticEvent } from '../src/types.js';
 import { FakeHub, FakeRedis } from './fake-redis.js';
+import { TEST_APP_KEY, wire } from './relay-wire.js';
 
 const RELAY_CHANNEL = 'agora:diagnostics:relay';
 
@@ -31,6 +32,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const seen = hubCapture(hub);
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: new FakeRedis(hub),
         sub: new FakeRedis(hub),
         libs: ['resilience'],
@@ -53,6 +55,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const sub = new FakeRedis(hub);
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: new FakeRedis(hub),
         sub,
         libs: ['resilience'],
@@ -70,7 +73,7 @@ describe('createDiagnosticsRedisRelay', () => {
       event: 'circuit-opened',
       payload: { key: 'x' },
     };
-    remote.publish(RELAY_CHANNEL, JSON.stringify({ node: 'OTHER', env }));
+    remote.publish(RELAY_CHANNEL, wire('OTHER', env));
 
     expect(local).toHaveBeenCalledTimes(1);
     expect((local.mock.calls[0]?.[0] as DiagnosticEvent | undefined)?.payload).toEqual({
@@ -83,6 +86,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const sub = new FakeRedis(hub);
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: new FakeRedis(hub),
         sub,
         libs: ['resilience'],
@@ -93,7 +97,7 @@ describe('createDiagnosticsRedisRelay', () => {
     getChannel('resilience', 'circuit-opened').subscribe(() => local());
 
     const env: DiagnosticEvent = { ts: 1, lib: 'resilience', event: 'circuit-opened', payload: {} };
-    new FakeRedis(hub).publish(RELAY_CHANNEL, JSON.stringify({ node: 'A', env }));
+    new FakeRedis(hub).publish(RELAY_CHANNEL, wire('A', env));
 
     expect(local).not.toHaveBeenCalled();
   });
@@ -103,6 +107,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const relayPub = new FakeRedis(hub);
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: relayPub,
         sub: new FakeRedis(hub),
         libs: ['resilience'],
@@ -125,7 +130,7 @@ describe('createDiagnosticsRedisRelay', () => {
       event: 'circuit-opened',
       payload: { key: 'p' },
     };
-    new FakeRedis(hub).publish(RELAY_CHANNEL, JSON.stringify({ node: 'B', env }));
+    new FakeRedis(hub).publish(RELAY_CHANNEL, wire('B', env));
     expect(onLocal).toHaveBeenCalledTimes(2);
     // ...and the re-emit is NOT forwarded back to Redis (loop guard held)
     await nextTurn();
@@ -137,6 +142,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const seen = hubCapture(hub);
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: new FakeRedis(hub),
         sub: new FakeRedis(hub),
         channels: [{ lib: 'durable', event: 'run.failed' }],
@@ -157,6 +163,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const seen = hubCapture(hub);
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: new FakeRedis(hub),
         sub: new FakeRedis(hub),
         libs: ['authz'],
@@ -176,6 +183,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const hub = new FakeHub();
     teardowns.push(
       createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: new FakeRedis(hub),
         sub: new FakeRedis(hub),
         all: true,
@@ -191,6 +199,7 @@ describe('createDiagnosticsRedisRelay', () => {
     const hub = new FakeHub();
     const relayPub = new FakeRedis(hub);
     const teardown = createDiagnosticsRedisRelay({
+      appKey: TEST_APP_KEY,
       pub: relayPub,
       sub: new FakeRedis(hub),
       libs: ['resilience'],
@@ -221,6 +230,7 @@ describe('createDiagnosticsRedisRelay', () => {
       const relayPub = new FakeRedis(hub);
       teardowns.push(
         createDiagnosticsRedisRelay({
+          appKey: TEST_APP_KEY,
           pub: relayPub,
           sub: new FakeRedis(hub),
           libs: ['resilience'],
@@ -235,7 +245,8 @@ describe('createDiagnosticsRedisRelay', () => {
         expect(relayPub.pipelineExecCount).toBe(0);
 
         await nextTurn();
-        expect(stringify).toHaveBeenCalledTimes(1);
+        // Serialized (and signed) off the emitter's stack, on the next turn.
+        expect(stringify).toHaveBeenCalled();
         expect(relayPub.publishCount).toBe(1);
       } finally {
         stringify.mockRestore();
@@ -248,6 +259,7 @@ describe('createDiagnosticsRedisRelay', () => {
       const relayPub = new FakeRedis(hub);
       teardowns.push(
         createDiagnosticsRedisRelay({
+          appKey: TEST_APP_KEY,
           pub: relayPub,
           sub: new FakeRedis(hub),
           all: true,
@@ -283,6 +295,7 @@ describe('createDiagnosticsRedisRelay', () => {
       };
       teardowns.push(
         createDiagnosticsRedisRelay({
+          appKey: TEST_APP_KEY,
           pub: plainPub,
           sub: new FakeRedis(hub),
           libs: ['resilience'],
@@ -305,6 +318,7 @@ describe('createDiagnosticsRedisRelay', () => {
       const seen = hubCapture(hub);
       const relayPub = new FakeRedis(hub);
       const teardown = createDiagnosticsRedisRelay({
+        appKey: TEST_APP_KEY,
         pub: relayPub,
         sub: new FakeRedis(hub),
         libs: ['resilience'],
@@ -323,6 +337,7 @@ describe('createDiagnosticsRedisRelay', () => {
       const seen = hubCapture(hub);
       teardowns.push(
         createDiagnosticsRedisRelay({
+          appKey: TEST_APP_KEY,
           pub: new FakeRedis(hub),
           sub: new FakeRedis(hub),
           libs: ['resilience'],
@@ -351,6 +366,7 @@ describe('createDiagnosticsRedisRelay', () => {
       };
       teardowns.push(
         createDiagnosticsRedisRelay({
+          appKey: TEST_APP_KEY,
           pub: throwing,
           sub: new FakeRedis(hub),
           libs: ['resilience'],

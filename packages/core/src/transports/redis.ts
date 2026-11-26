@@ -2,6 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { getChannel } from '../channel.js';
 import { type ChannelRef, createChannelSelector, createTurnBatcher } from '../relay.js';
 import type { DiagnosticEvent } from '../types.js';
+import {
+  createRemoteChannelGate,
+  MAX_RELAY_SKEW_MS,
+  type RelayAuthOptions,
+  type RelayRejection,
+  ReplayGuard,
+  relayKey,
+  signFrame,
+  verifyFrame,
+} from './relay_auth.js';
 
 export type { ChannelRef };
 
@@ -22,7 +32,7 @@ export interface RedisPipelineLike {
   exec(): unknown;
 }
 
-export interface DiagnosticsRedisRelayOptions {
+export interface DiagnosticsRedisRelayOptions extends RelayAuthOptions {
   /** Publisher connection. */
   pub: RedisLike;
   /** Subscriber connection (separate from `pub`). For ioredis: `const sub = pub.duplicate()`. */
@@ -37,6 +47,10 @@ export interface DiagnosticsRedisRelayOptions {
   redisChannel?: string;
   /** Unique id for THIS process, for echo suppression. Default a random id. */
   nodeId?: string;
+  /** How many new channels relayed events may create in this process. Default 256. */
+  maxRemoteChannels?: number;
+  /** Called (once per reason) when a received message is dropped. */
+  onReject?: (reason: RelayRejection | 'invalid-channel' | 'too-many-channels') => void;
 }
 
 const DEFAULT_REDIS_CHANNEL = 'agora:diagnostics:relay';
@@ -62,6 +76,20 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
   const { pub, sub } = options;
   const redisChannel = options.redisChannel ?? DEFAULT_REDIS_CHANNEL;
   const nodeId = options.nodeId ?? randomUUID();
+  // Every message is signed; without a key (no `secret`, no APP_KEY) the relay refuses to start.
+  const key = relayKey(options, `redis:${redisChannel}`, 'the Redis transport');
+  const replays = new ReplayGuard(2 * MAX_RELAY_SKEW_MS + 1_000);
+  const gate = createRemoteChannelGate(options.maxRemoteChannels);
+  const reported = new Set<string>();
+  const reject = (reason: Parameters<NonNullable<DiagnosticsRedisRelayOptions['onReject']>>[0]) => {
+    if (reported.has(reason)) return;
+    reported.add(reason);
+    try {
+      options.onReject?.(reason);
+    } catch {
+      // a throwing hook must never break the relay
+    }
+  };
 
   const reEmitting = new WeakSet<object>();
 
@@ -77,7 +105,7 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
     const messages: string[] = [];
     for (const env of envs) {
       try {
-        messages.push(JSON.stringify({ node: nodeId, env }));
+        messages.push(JSON.stringify(signFrame(key, nodeId, env)));
       } catch {
         // an unserializable event is dropped without affecting the rest of the batch
       }
@@ -105,15 +133,33 @@ export function createDiagnosticsRedisRelay(options: DiagnosticsRedisRelayOption
 
   const onMessage = (channel: string, raw: string): void => {
     if (channel !== redisChannel) return;
-    let parsed: { node?: unknown; env?: DiagnosticEvent };
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(raw) as { node?: unknown; env?: DiagnosticEvent };
+      parsed = JSON.parse(raw);
     } catch {
-      return; // ignore malformed
+      reject('malformed');
+      return;
     }
-    if (parsed.node === nodeId) return; // our own echo
-    const env = parsed.env;
-    if (!env || typeof env.lib !== 'string' || typeof env.event !== 'string') return;
+    const frame = verifyFrame(key, parsed, MAX_RELAY_SKEW_MS);
+    if (typeof frame === 'string') {
+      reject(frame);
+      return;
+    }
+    if (frame.node === nodeId) return; // our own echo
+    if (!replays.accept(frame.id)) {
+      reject('replayed');
+      return;
+    }
+    const env = frame.env as DiagnosticEvent | null;
+    if (!env || typeof env !== 'object') {
+      reject('malformed');
+      return;
+    }
+    const admitted = gate.admit(env.lib, env.event);
+    if (admitted !== 'ok') {
+      reject(admitted === 'invalid' ? 'invalid-channel' : 'too-many-channels');
+      return;
+    }
     reEmitting.add(env);
     try {
       getChannel(env.lib, env.event).publish(env);

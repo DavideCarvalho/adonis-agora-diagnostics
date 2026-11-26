@@ -102,6 +102,20 @@ Two consequences:
 - The payload is serialized when the turn ends, not when `emit()` is called. A payload object the emitter mutates synchronously after `emit()` goes out with its state at flush time, which is also the state in-process subscribers holding the same reference see.
 - Stopping the relay sends whatever is still queued, synchronously, before it unsubscribes. Graceful shutdown doesn't lose the last turn's events.
 
+### Authentication
+
+Both transports authenticate every message: it carries an HMAC-SHA256 under a key every relaying process shares. By default that key is derived from the app's `APP_KEY` (`config/app.ts` → `appKey`, else `process.env.APP_KEY`), so the processes of one app need no extra configuration. When processes of **different** apps relay to each other, give each transport the same `secret` (at least 16 characters):
+
+```ts title="config/diagnostics.ts"
+transports: {
+  redis: transports.redis({ connection: 'main', secret: env.get('DIAGNOSTICS_RELAY_SECRET') }),
+}
+```
+
+A received message is dropped (and logged once per reason) when it is not signed with that key, when it is more than a minute old or ahead (Redis), when it was already seen, or when its `lib` / `event` are not plain names. Relayed events may create at most `maxRemoteChannels` (default 256) new channels per process. A queue job stays valid for `maxJobAgeMs` (default 24 hours), and the same message in another job is refused as a replay (a retry of the same job still runs).
+
+Without `secret` and without `APP_KEY`, a transport refuses to start and says what to set. Upgrade every process together: messages from older versions are dropped.
+
 ## The Redis transport
 
 `transports.redis(config)` relays over [`@adonisjs/redis`](https://docs.adonisjs.com/guides/digging-deeper/redis) pub/sub. A forwarded event is published to a Redis channel; every other process subscribed to that channel re-emits it onto its local bus. Echoes are suppressed by `nodeId`, and a re-emit guard stops a re-emitted event from being forwarded back — so events never loop. The events of one turn go out as a single ioredis pipeline, one `{ node, env }` message per event. A payload that can't be serialized (a circular reference) drops only that event.
@@ -330,7 +344,7 @@ The transport factories wrap two framework-agnostic functions, exported for non-
 ```ts
 import { createDiagnosticsRedisRelay, createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
 
-const stop = createDiagnosticsRedisRelay({ pub, sub, libs: ['resilience'], nodeId: 'A' })
+const stop = createDiagnosticsRedisRelay({ pub, sub, appKey: process.env.APP_KEY, libs: ['resilience'], nodeId: 'A' })
 // …later
 stop()
 ```
@@ -346,6 +360,10 @@ stop()
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
 | `redisChannel` | `string` | `agora:diagnostics:relay` | The Redis channel to relay on. Every process that should see each other's events must agree on it. |
 | `nodeId` | `string` | random | Id stamped on outgoing messages; incoming messages carrying it are dropped as this process's own echo. |
+| `secret` | `string \| Secret` | — | Shared secret (16+ characters) the messages are signed with. Takes precedence over `appKey`. |
+| `appKey` | `string \| Secret` | — | The app's `APP_KEY`; the signing key is derived from it when no `secret` is set. One of the two is required. |
+| `maxRemoteChannels` | `number` | `256` | How many new channels relayed events may create in this process. |
+| `onReject` | `(reason) => void` | ignored | Called once per reason when a received message is dropped. |
 
 Neither connection is closed by `stop()` — the relay only flushes, unsubscribes and detaches its message listener, because it opened neither. Closing is the caller's job, which is exactly what the `transports.redis` factory does for the `duplicate()` it created.
 
@@ -372,17 +390,22 @@ interface RedisLike {
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
 | `nodeId` | `string` | random | Id stamped onto every dispatched envelope; envelopes carrying it are dropped as this process's own echo. |
 | `onDispatchError` | `(error: unknown) => void` | ignored | Called when `dispatch` or `dispatchMany` throws or rejects, once per failed call. See [When dispatching fails](#when-dispatching-fails). |
+| `secret` / `appKey` | `string \| Secret` | — | As for the Redis relay: what the jobs are signed with. One of the two is required. |
+| `maxJobAgeMs` | `number` | 24 hours | How long a dispatched job stays valid. |
+| `maxRemoteChannels` | `number` | `256` | How many new channels relayed events may create in this process. |
+| `onReject` | `(reason) => void` | ignored | Called once per reason when a job is refused. |
 
 `job` is structural too — anything whose `dispatch(payload)` returns a promise (or nothing) satisfies it, which is what makes the relay testable without a queue backend. `dispatchMany` is optional; the `@adonisjs/queue` job class has it. Without it, every event in a turn gets its own `dispatch`:
 
 ```ts
 interface DiagnosticsEventJobLike {
-  dispatch(payload: DiagnosticsEventEnvelope): PromiseLike<unknown> | unknown
-  dispatchMany?(payloads: DiagnosticsEventEnvelope[]): PromiseLike<unknown> | unknown
+  dispatch(payload: DiagnosticsEventJobPayload): PromiseLike<unknown> | unknown
+  dispatchMany?(payloads: DiagnosticsEventJobPayload[]): PromiseLike<unknown> | unknown
 }
 
-const dispatched: DiagnosticsEventEnvelope[] = []
+const dispatched: DiagnosticsEventJobPayload[] = []
 const stop = createDiagnosticsQueueRelay({
+  appKey: process.env.APP_KEY,
   job: { dispatch: (payload) => dispatched.push(payload) },
   all: true,
   nodeId: 'test-node',

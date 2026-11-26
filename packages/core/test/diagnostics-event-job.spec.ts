@@ -5,11 +5,12 @@ import DiagnosticsEventJob from '../src/transports/diagnostics_event_job.js';
 import { createDiagnosticsQueueRelay } from '../src/transports/queue.js';
 import type { DiagnosticEvent } from '../src/types.js';
 import { FakeJob } from './fake-queue.js';
+import { jobPayload, TEST_APP_KEY } from './relay-wire.js';
 
 /** Hydrate the real job the way a worker would, then run its `execute()`. */
-async function runJob(envelope: { node: string; env: DiagnosticEvent }) {
+async function runJob(envelope: { node: string; env: DiagnosticEvent }, payload?: unknown) {
   const job = new DiagnosticsEventJob();
-  job.$hydrate(envelope, {
+  job.$hydrate((payload ?? jobPayload(envelope.node, envelope.env)) as never, {
     jobId: 'j1',
     name: 'agora.diagnostics.event',
     attempt: 1,
@@ -34,7 +35,12 @@ describe('DiagnosticsEventJob', () => {
 
   it('re-emits onto the local bus when a relay is bound', async () => {
     teardowns.push(
-      createDiagnosticsQueueRelay({ job: new FakeJob(), libs: ['authz'], nodeId: 'A' }),
+      createDiagnosticsQueueRelay({
+        appKey: TEST_APP_KEY,
+        job: new FakeJob(),
+        libs: ['authz'],
+        nodeId: 'A',
+      }),
     );
     const local = vi.fn();
     getChannel('authz', 'decision').subscribe((m) => local(m));

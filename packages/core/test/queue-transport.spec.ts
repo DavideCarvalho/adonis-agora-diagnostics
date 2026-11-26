@@ -35,9 +35,12 @@ import { transports } from '../src/transports/factory.js';
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function context(): TransportContext {
-  const logger = { error: vi.fn() };
+  const logger = { error: vi.fn(), warn: vi.fn() };
   return {
-    app: { container: { make: async () => logger } },
+    app: {
+      container: { make: async () => logger },
+      config: { get: () => 'diagnostics-test-app-key-0123456789' },
+    },
     forward: { libs: ['resilience'] },
     nodeId: 'A',
   } as unknown as TransportContext;

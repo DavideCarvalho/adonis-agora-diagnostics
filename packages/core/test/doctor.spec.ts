@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import DiagnosticsProvider from '../providers/diagnostics_provider.js';
 import type { DiagnosticsConfig } from '../src/define_config.js';
 import type { AgoraDoctorCheck, AgoraDoctorResult } from '../src/doctor/agora_doctor.js';
@@ -12,7 +12,13 @@ import { transports } from '../src/transports/factory.js';
 
 const roots: string[] = [];
 
+// The automatic relay mode reads APP_KEY: these checks run as if the app had none.
+const savedAppKey = process.env.APP_KEY;
+beforeEach(() => {
+  delete process.env.APP_KEY;
+});
 afterEach(() => {
+  if (savedAppKey !== undefined) process.env.APP_KEY = savedAppKey;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   stopRecentEvents();
 });
@@ -77,8 +83,10 @@ describe('diagnostics doctor checks', () => {
       'diagnostics.recent-buffer',
       'diagnostics.listeners',
       'diagnostics.otel',
+      'diagnostics.relay-auth',
+      'diagnostics.relay-auth-key',
     ]);
-    expect(agoraDoctorChecks).toHaveLength(5);
+    expect(agoraDoctorChecks).toHaveLength(7);
   });
 
   describe('diagnostics.transport', () => {
@@ -108,14 +116,42 @@ describe('diagnostics doctor checks', () => {
       );
       expect(noConnection[0]).toMatchObject({ status: 'error' });
       expect(noConnection[0]?.message).toContain('"cache"');
-      const ok = await run(
-        'diagnostics.transport',
+      const other = { redis: { connection: 'main', connections: { main: {} } } };
+      const unauthenticated = await run(
+        'diagnostics.relay-auth',
+        fakeApp({ default: 'r', transports: { r: transports.redis() } }, { root, other }),
+      );
+      expect(unauthenticated[0]).toMatchObject({ status: 'error' });
+      expect(unauthenticated[0]?.message).toContain('authenticate');
+      // The fix names the zero-configuration path first.
+      expect(unauthenticated[0]?.fix).toMatch(
+        /^the Redis relay needs authentication\. Set APP_KEY in this app/,
+      );
+      const insecure = await run(
+        'diagnostics.relay-auth',
         fakeApp(
-          { default: 'r', transports: { r: transports.redis() } },
-          { root, other: { redis: { connection: 'main', connections: { main: {} } } } },
+          { default: 'r', transports: { r: transports.redis({ insecure: true }) } },
+          { root, other },
+        ),
+      );
+      expect(insecure[0]).toMatchObject({ status: 'warn' });
+      const ok = await run(
+        'diagnostics.relay-auth',
+        fakeApp(
+          {
+            default: 'r',
+            transports: { r: transports.redis({ secret: 'a-shared-relay-secret' }) },
+          },
+          { root, other },
         ),
       );
       expect(ok[0]).toMatchObject({ status: 'ok' });
+      expect(ok[0]?.message).not.toContain('a-shared-relay-secret');
+      const transport = await run(
+        'diagnostics.transport',
+        fakeApp({ default: 'r', transports: { r: transports.redis() } }, { root, other }),
+      );
+      expect(transport[0]).toMatchObject({ status: 'ok' });
     });
 
     it('queue: needs @adonisjs/queue and config/queue.ts', async () => {

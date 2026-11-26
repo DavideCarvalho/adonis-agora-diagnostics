@@ -34,7 +34,12 @@ describe('DiagnosticsEventJob', () => {
 
   it('re-emits onto the local bus when a relay is bound', async () => {
     teardowns.push(
-      createDiagnosticsQueueRelay({ job: new FakeJob(), libs: ['authz'], nodeId: 'A' }),
+      createDiagnosticsQueueRelay({
+        insecure: true,
+        job: new FakeJob(),
+        libs: ['authz'],
+        nodeId: 'A',
+      }),
     );
     const local = vi.fn();
     getChannel('authz', 'decision').subscribe((m) => local(m));

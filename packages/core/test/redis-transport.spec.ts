@@ -81,7 +81,7 @@ describe('transports.redis teardown', () => {
     redis.sub = sub;
 
     const seen = await unhandledRejectionsDuring(async () => {
-      const stop = await transports.redis()(context);
+      const stop = await transports.redis({ secret: 'test-relay-secret-0123456789' })(context);
       stop(); // a short-lived ace command: shutdown right after boot
     });
 
@@ -96,7 +96,7 @@ describe('transports.redis teardown', () => {
     redis.sub = sub;
 
     const seen = await unhandledRejectionsDuring(async () => {
-      const stop = await transports.redis()(context);
+      const stop = await transports.redis({ secret: 'test-relay-secret-0123456789' })(context);
       stop();
     });
 
@@ -110,7 +110,7 @@ describe('transports.redis teardown', () => {
     redis.sub = sub;
 
     const seen = await unhandledRejectionsDuring(async () => {
-      const stop = await transports.redis()(context);
+      const stop = await transports.redis({ secret: 'test-relay-secret-0123456789' })(context);
       sub.status = 'end';
       expect(() => stop()).not.toThrow();
     });

@@ -103,6 +103,7 @@ describe('emit app attribution', () => {
     const hub = new FakeHub();
     teardowns.push(
       createDiagnosticsRedisRelay({
+        secret: 'test-relay-secret-0123456789',
         pub: new FakeRedis(hub),
         sub: new FakeRedis(hub),
         libs: ['durable'],
@@ -111,6 +112,7 @@ describe('emit app attribution', () => {
     );
     teardowns.push(
       createDiagnosticsRedisRelay({
+        secret: 'test-relay-secret-0123456789',
         pub: new FakeRedis(hub),
         sub: new FakeRedis(hub),
         libs: [],
@@ -134,7 +136,9 @@ describe('emit app attribution', () => {
 
   it('the queue relay preserves app end to end', async () => {
     const job = new FakeJob();
-    teardowns.push(createDiagnosticsQueueRelay({ job, libs: ['durable'], nodeId: 'A' }));
+    teardowns.push(
+      createDiagnosticsQueueRelay({ insecure: true, job, libs: ['durable'], nodeId: 'A' }),
+    );
 
     emit('durable', 'run.failed', { runId: 'r1' }, { app: 'hub' });
     await nextTurn();

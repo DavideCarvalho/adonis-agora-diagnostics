@@ -9,8 +9,10 @@ import type {
 import type { ChannelSelection } from '../relay.js';
 import type { DiagnosticsRole } from '../role.js';
 import type { DiagnosticsListenerPayload } from './diagnostics_listener_job.js';
-import type { DiagnosticsEventEnvelope } from './queue.js';
+import type { DiagnosticsEventJobPayload } from './queue.js';
+import type { QueueJobAuthOptions } from './queue_auth.js';
 import type { RedisLike } from './redis.js';
+import type { RelayAuthOptions } from './relay_auth.js';
 
 /**
  * Runtime context a {@link TransportProvider} receives when the diagnostics provider starts the
@@ -57,16 +59,28 @@ export interface TransportHandle {
  */
 export type TransportProvider = (ctx: TransportContext) => Promise<(() => void) | TransportHandle>;
 
-/** Options for the Redis pub/sub transport. */
-export interface RedisTransportConfig {
+/**
+ * Options for the Redis pub/sub transport. Messages are authenticated: with nothing set, by a key
+ * derived from the app's `APP_KEY` (the processes of one app share it); across apps, `secret` or
+ * an explicit `crypto`. Without any, the relay refuses to start.
+ */
+export interface RedisTransportConfig extends RelayAuthOptions {
   /** `@adonisjs/redis` connection name to relay over. Defaults to the default connection. */
   connection?: string;
   /** Redis channel to relay on. Default `agora:diagnostics:relay`. */
   redisChannel?: string;
+  /**
+   * How many channels events from other processes may create in this one, beyond the ones it
+   * registered itself. Default 256.
+   */
+  maxRemoteChannels?: number;
 }
 
-/** Options for the `@adonisjs/queue` transport. */
-export interface QueueTransportConfig {
+/**
+ * Options for the `@adonisjs/queue` transport. Its jobs are authenticated like Redis relay messages:
+ * automatic with the app's `APP_KEY`, else one of `secret`, `crypto` or `insecure`.
+ */
+export interface QueueTransportConfig extends QueueJobAuthOptions {
   /**
    * `@adonisjs/queue` queue name to dispatch the relay job onto. A worker must process this queue —
    * `queue` is a FLAG on `queue:work`, not a positional argument, so it is
@@ -148,6 +162,14 @@ export const transports = {
   /** Relay diagnostics events across processes over `@adonisjs/redis` pub/sub. */
   redis(config: RedisTransportConfig = {}): TransportProvider {
     return tagTransport('redis', config, async (ctx) => {
+      let logger: BootLogger | undefined;
+      try {
+        logger = (await ctx.app.container.make('logger')) as BootLogger;
+      } catch {
+        // no logger bound: dropped messages are reported as process warnings
+      }
+      // Before touching Redis: a relay without authentication fails boot with what to add.
+      const auth = await resolveAuth(ctx, config, 'the Redis relay', 'redis relay', logger);
       const redisService = (await import('@adonisjs/redis/services/main')).default;
       const { createDiagnosticsRedisRelay, settle } = await import('./redis.js');
 
@@ -168,6 +190,13 @@ export const transports = {
         ...selection(mergeSelection(ctx.forward, ctx.listeners)),
         ...(config.redisChannel !== undefined ? { redisChannel: config.redisChannel } : {}),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
+        ...auth,
+        ...(config.maxRemoteChannels !== undefined
+          ? { maxRemoteChannels: config.maxRemoteChannels }
+          : {}),
+        ...(logger
+          ? { onError: (error: Error) => logger.warn({ err: error }, error.message) }
+          : {}),
       });
 
       // The subscriber is a dedicated `duplicate()` connection created and owned
@@ -207,8 +236,21 @@ export const transports = {
       const { Locator } = await import('@adonisjs/queue');
       const { default: DiagnosticsEventJob } = await import('./diagnostics_event_job.js');
       const { default: DiagnosticsListenerJob } = await import('./diagnostics_listener_job.js');
-      const { createDiagnosticsQueueRelay } = await import('./queue.js');
-      const logger = await ctx.app.container.make('logger');
+      const { createDiagnosticsQueueRelay, queueRejectionHooks } = await import('./queue.js');
+      const { bindQueueJobAuth, createQueueJobAuth } = await import('./queue_auth.js');
+      const logger = (await ctx.app.container.make('logger')) as BootLogger & {
+        error(obj: unknown, msg?: string): void;
+      };
+      const auth = await resolveAuth(ctx, config, 'the queue transport', 'queue jobs', logger);
+      // One authentication for both kinds of jobs, bound so a worker in this process opens them.
+      const jobAuth = createQueueJobAuth(
+        {
+          ...auth,
+          ...(config.maxJobAgeMs !== undefined ? { maxJobAgeMs: config.maxJobAgeMs } : {}),
+        },
+        queueRejectionHooks((error) => logger.warn({ err: error }, error.message)),
+      );
+      const unbindAuth = bindQueueJobAuth(jobAuth);
 
       // Ensure a worker in this process (or one sharing this registry) can resolve the jobs by name.
       const jobName = DiagnosticsEventJob.options.name ?? 'agora.diagnostics.event';
@@ -223,16 +265,17 @@ export const transports = {
       const onQueue = <T extends { toQueue(name: string): T }>(dispatcher: T): T =>
         queueName ? dispatcher.toQueue(queueName) : dispatcher;
       const job = {
-        dispatch(payload: DiagnosticsEventEnvelope) {
+        dispatch(payload: DiagnosticsEventJobPayload) {
           return onQueue(DiagnosticsEventJob.dispatch(payload));
         },
-        dispatchMany(payloads: DiagnosticsEventEnvelope[]) {
+        dispatchMany(payloads: DiagnosticsEventJobPayload[]) {
           return onQueue(DiagnosticsEventJob.dispatchMany(payloads));
         },
       };
 
       const stopRelay = createDiagnosticsQueueRelay({
         job,
+        jobAuth,
         ...selection(ctx.forward),
         ...(ctx.nodeId !== undefined ? { nodeId: ctx.nodeId } : {}),
         // An 'api' process binds no re-emitter: a relay job run there re-emits nothing.
@@ -243,19 +286,22 @@ export const transports = {
 
       const handle: ListenerDeliveryTransport = {
         async deliver(deliveries) {
-          const payloads: DiagnosticsListenerPayload[] = deliveries.map((delivery) => ({
+          const items: DiagnosticsListenerPayload[] = deliveries.map((delivery) => ({
             listenerId: delivery.listenerId,
             env: delivery.envelope,
           }));
+          const payloads = await jobAuth.seal('listener', ctx.nodeId ?? 'unknown', items);
+          if (payloads.length === 0) return;
           if (payloads.length === 1) {
-            await onQueue(
-              DiagnosticsListenerJob.dispatch(payloads[0] as DiagnosticsListenerPayload),
-            );
+            await onQueue(DiagnosticsListenerJob.dispatch(payloads[0] as never));
           } else {
-            await onQueue(DiagnosticsListenerJob.dispatchMany(payloads));
+            await onQueue(DiagnosticsListenerJob.dispatchMany(payloads as never[]));
           }
         },
-        stop: stopRelay,
+        stop() {
+          stopRelay();
+          unbindAuth();
+        },
       };
       return handle;
     });
@@ -301,25 +347,99 @@ export const transports = {
   },
 };
 
+interface BootLogger {
+  info?(msg: string): void;
+  warn(obj: unknown, msg?: string): void;
+}
+
+/**
+ * The authentication a relay starts with (explicit, or automatic crypto), logged once at boot; the
+ * actionable boot error when none resolves.
+ */
+async function resolveAuth(
+  ctx: TransportContext,
+  config: RelayAuthOptions,
+  what: string,
+  label: string,
+  logger: BootLogger | undefined,
+): Promise<RelayAuthOptions> {
+  const { resolveRelayAuth } = await import('./auto_auth.js');
+  const resolved = await resolveRelayAuth(ctx.app, config, what);
+  try {
+    logger?.info?.(`[@adonis-agora/diagnostics] ${label}: ${resolved.description}`);
+  } catch {
+    // a broken logger must not fail boot
+  }
+  return resolved.options;
+}
+
 /** The built-in transport a {@link TransportProvider} was made by. */
 export type TransportKind = 'redis' | 'queue' | 'durable';
 
 const TRANSPORT_INFO = Symbol.for('@agora/diagnostics:transport-info');
 
-/** What {@link transportInfo} reads off a provider built by {@link transports}. */
+/**
+ * How a Redis or queue transport authenticates its messages, as {@link transportInfo} reports it:
+ * `auto` is nothing configured (the app's `APP_KEY`, else boot fails); `none` is `crypto: false`
+ * with nothing else (boot fails).
+ */
+export type RedisRelayAuthMode = 'appKey' | 'secret' | 'crypto' | 'insecure' | 'auto' | 'none';
+
+/**
+ * What {@link transportInfo} reads off a provider built by {@link transports}. A Redis or queue
+ * transport's `secret` and `crypto` are never included: `auth` names the mode instead (and
+ * `cryptoKey` the key of an explicit `crypto`).
+ */
 export interface TransportInfo {
   kind: TransportKind;
-  options: Readonly<RedisTransportConfig | QueueTransportConfig | DurableTransportConfig>;
+  options: Readonly<
+    | (Omit<RedisTransportConfig, 'appKey' | 'secret' | 'crypto' | 'insecure'> & {
+        auth?: RedisRelayAuthMode;
+        cryptoKey?: string;
+      })
+    | (Omit<QueueTransportConfig, 'appKey' | 'secret' | 'crypto' | 'insecure'> & {
+        auth?: RedisRelayAuthMode;
+        cryptoKey?: string;
+      })
+    | DurableTransportConfig
+  >;
 }
+
+/** The internal handle of a relay's configured authentication, for the doctor's deep check. */
+const TRANSPORT_AUTH = Symbol.for('@agora/diagnostics:transport-auth');
 
 function tagTransport(
   kind: TransportKind,
   options: RedisTransportConfig | QueueTransportConfig | DurableTransportConfig,
   provider: TransportProvider,
 ): TransportProvider {
+  // Never expose the relay's secret or cipher through transportInfo (dev tools, doctor): only the mode.
+  const { appKey, secret, crypto, insecure, ...rest } = options as RedisTransportConfig;
+  const auth =
+    kind === 'durable'
+      ? {}
+      : {
+          auth: (appKey !== undefined
+            ? 'appKey'
+            : secret !== undefined
+              ? 'secret'
+              : crypto !== undefined && crypto !== false
+                ? 'crypto'
+                : insecure === true
+                  ? 'insecure'
+                  : crypto === false
+                    ? 'none'
+                    : 'auto') as RedisRelayAuthMode,
+          ...(crypto ? { cryptoKey: crypto.key ?? 'console-diagnostics' } : {}),
+        };
   Object.defineProperty(provider, TRANSPORT_INFO, {
-    value: { kind, options: { ...options } } satisfies TransportInfo,
+    value: { kind, options: { ...rest, ...auth } } satisfies TransportInfo,
   });
+  if (kind !== 'durable') {
+    Object.defineProperty(provider, TRANSPORT_AUTH, {
+      value: { appKey, secret, crypto, insecure } satisfies RelayAuthOptions,
+    });
+  }
   return provider;
 }
 
@@ -330,4 +450,10 @@ function tagTransport(
 export function transportInfo(provider: unknown): TransportInfo | undefined {
   if (typeof provider !== 'function') return undefined;
   return (provider as unknown as Record<symbol, TransportInfo | undefined>)[TRANSPORT_INFO];
+}
+
+/** The authentication options a Redis or queue transport was configured with (for the doctor). */
+export function transportAuthOf(provider: unknown): RelayAuthOptions | undefined {
+  if (typeof provider !== 'function') return undefined;
+  return (provider as unknown as Record<symbol, RelayAuthOptions | undefined>)[TRANSPORT_AUTH];
 }

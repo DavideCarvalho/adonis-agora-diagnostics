@@ -18,6 +18,7 @@ const built = existsSync(fileURLToPath(new URL('../dist/src/listeners.js', impor
 interface Message {
   name: string;
   ready?: boolean;
+  warned?: string;
   stopped?: boolean;
   invoked?: { id: string; payload: unknown; attempt: number };
   error?: string;
@@ -122,8 +123,15 @@ afterAll(() => {
 });
 
 const peers: Peer[] = [];
-async function start(mode: string, role: string, name: string, namespace: string) {
-  const peer = new Peer([mode, role, name, redisUrl as string, namespace]);
+async function start(mode: string, role: string, name: string, namespace: string, appKey?: string) {
+  const peer = new Peer([
+    mode,
+    role,
+    name,
+    redisUrl as string,
+    namespace,
+    ...(appKey ? [appKey] : []),
+  ]);
   peers.push(peer);
   await peer.until((m) => m.some((x) => x.ready));
   return peer;
@@ -158,6 +166,59 @@ describe('listeners across two processes on a real Redis', () => {
         expect(other.invocations()).toHaveLength(1);
         expect(other.invocations()[0]?.id).toBe(web.invocations()[0]?.id);
         expect(other.invocations()[0]?.payload).toEqual({ n: 1 });
+      } finally {
+        await Promise.all(peers.splice(0).map((p) => p.stop()));
+      }
+    },
+    30_000,
+  );
+
+  run(
+    'redis, APP_KEY mode: processes with the same APP_KEY relay; another APP_KEY is refused',
+    async (ctx) => {
+      if (!redisUrl) return ctx.skip();
+      const ns = `diag-test-${randomUUID()}`;
+      const appKey = 'two-process-app-key-0123456789';
+      try {
+        const web = await start('redis', 'web', 'web', ns, appKey);
+        const worker = await start('redis', 'web', 'worker', ns, appKey);
+        const stranger = await start(
+          'redis',
+          'web',
+          'stranger',
+          ns,
+          'another-app-key-0123456789ab',
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        web.send(`emit ${JSON.stringify({ n: 11 })}`);
+        await worker.until((m) => m.some((x) => x.invoked));
+        await stranger.until((m) => m.some((x) => x.warned?.includes('failed authentication')));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        expect(worker.invocations().map((r) => r.payload)).toEqual([{ n: 11 }]);
+        expect(worker.invocations()[0]?.id).toBe(web.invocations()[0]?.id);
+        expect(stranger.invocations()).toEqual([]);
+      } finally {
+        await Promise.all(peers.splice(0).map((p) => p.stop()));
+      }
+    },
+    30_000,
+  );
+
+  run(
+    'queue, APP_KEY mode: the listener job runs in a worker of the same app',
+    async (ctx) => {
+      if (!redisUrl) return ctx.skip();
+      const ns = `diag-test-${randomUUID()}`;
+      const appKey = 'two-process-app-key-0123456789';
+      try {
+        const worker = await start('queue', 'worker', 'worker', ns, appKey);
+        const web = await start('queue', 'web', 'web', ns, appKey);
+        web.send(`emit ${JSON.stringify({ n: 12 })}`);
+        await worker.until((m) => m.filter((x) => x.invoked).length >= 2, 15_000);
+        expect(worker.invocations().map((r) => r.payload)).toEqual([{ n: 12 }, { n: 12 }]);
+        expect(web.invocations()).toEqual([]);
       } finally {
         await Promise.all(peers.splice(0).map((p) => p.stop()));
       }
@@ -234,6 +295,37 @@ describe('listeners across two processes on a real Redis', () => {
         expect(runs.map((r) => r.attempt)).toEqual([1, 2]);
         expect(new Set(runs.map((r) => r.id)).size).toBe(1);
         expect(runs[0]?.payload).toEqual({ n: 2 });
+      } finally {
+        await Promise.all(peers.splice(0).map((p) => p.stop()));
+      }
+    },
+    30_000,
+  );
+
+  run(
+    'queue: forged and copied listener jobs never run; the genuine one runs and its retry passes',
+    async (ctx) => {
+      if (!redisUrl) return ctx.skip();
+      const ns = `diag-test-${randomUUID()}`;
+      try {
+        const worker = await start('queue', 'worker', 'worker', ns);
+        const web = await start('queue', 'web', 'web', ns);
+
+        web.send(`forge ${JSON.stringify({ forged: true })}`);
+        // The genuine job: attempt 1 throws, its retry (same job id) passes authentication.
+        await worker.until((m) => m.filter((x) => x.invoked).length >= 2, 15_000);
+        await worker.until(
+          (m) =>
+            ['without authentication', 'failed authentication', 'replay'].every((word) =>
+              m.some((x) => x.warned?.includes(word)),
+            ),
+          15_000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        const runs = worker.invocations();
+        expect(runs.map((r) => r.attempt)).toEqual([1, 2]);
+        expect(runs.map((r) => r.id)).toEqual(['copied', 'copied']);
       } finally {
         await Promise.all(peers.splice(0).map((p) => p.stop()));
       }

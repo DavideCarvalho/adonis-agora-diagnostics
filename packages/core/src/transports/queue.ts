@@ -1,10 +1,26 @@
 import { randomUUID } from 'node:crypto';
 import { getChannel } from '../channel.js';
 import { type ChannelRef, createChannelSelector, createTurnBatcher } from '../relay.js';
-import { publishRelayed } from '../relayed.js';
+import { isRelayed, publishRelayed } from '../relayed.js';
+import {
+  createRemoteChannelGate,
+  DEFAULT_MAX_REMOTE_CHANNELS,
+  type RemoteChannelGate,
+} from '../remote_channels.js';
 import type { DiagnosticEvent } from '../types.js';
+import {
+  bindQueueJobAuth,
+  createQueueJobAuth,
+  type QueueJobAuth,
+  type QueueJobAuthOptions,
+  type SealedJobPayload,
+} from './queue_auth.js';
+import { isThenable } from './relay_auth.js';
 
-export type { ChannelRef };
+export type { ChannelRef, SealedJobPayload };
+
+/** What the relay dispatches: a sealed message, or the plain envelope with `insecure: true`. */
+export type DiagnosticsEventJobPayload = SealedJobPayload | DiagnosticsEventEnvelope;
 
 /**
  * The envelope a relayed diagnostics event is dispatched as. `node` is the id of the process that
@@ -24,15 +40,29 @@ export interface DiagnosticsEventEnvelope {
  * queue backend.
  */
 export interface DiagnosticsEventJobLike {
-  dispatch(payload: DiagnosticsEventEnvelope): PromiseLike<unknown> | unknown;
+  dispatch(payload: DiagnosticsEventJobPayload): PromiseLike<unknown> | unknown;
   /**
    * When present, a turn's forwarded events are pushed with one call (still one job per event, e.g.
    * `Job.dispatchMany`) instead of one `dispatch` each.
    */
-  dispatchMany?(payloads: DiagnosticsEventEnvelope[]): PromiseLike<unknown> | unknown;
+  dispatchMany?(payloads: DiagnosticsEventJobPayload[]): PromiseLike<unknown> | unknown;
 }
 
-export interface DiagnosticsQueueRelayOptions {
+/**
+ * Options of {@link createDiagnosticsQueueRelay}. Exactly one of `secret`, `crypto` or `insecure`
+ * (or a ready `jobAuth`) is required: jobs are authenticated like Redis relay messages.
+ */
+export interface DiagnosticsQueueRelayOptions extends QueueJobAuthOptions {
+  /**
+   * The job authentication to seal with, instead of building one from `secret` / `crypto` /
+   * `insecure` (what `transports.queue()` does, to share it with listener jobs).
+   */
+  jobAuth?: QueueJobAuth;
+  /**
+   * Called (once per reason) when a job a worker runs here is refused: unsealed, unauthenticated,
+   * stale, replayed, malformed; and when the crypto cipher fails. Default: a process warning.
+   */
+  onError?: (error: Error) => void;
   /**
    * The job class used to forward events. Its `dispatch(envelope)` is called for each selected local
    * event. In an AdonisJS app this is the `DiagnosticsEventJob`, registered with `@adonisjs/queue`
@@ -52,6 +82,11 @@ export interface DiagnosticsQueueRelayOptions {
    * local bus. Default `true`; `false` makes a forward-only relay (a `role: 'api'` process).
    */
   receive?: boolean;
+  /**
+   * How many channels events received from other processes may create here, on top of the ones
+   * this process registered itself. Past it, events on unknown channels are dropped. Default 256.
+   */
+  maxRemoteChannels?: number;
   /**
    * Invoked if `job.dispatch(...)` / `job.dispatchMany(...)` throws or rejects (once per failed
    * call). Forwarding is fire-and-forget so a queue outage never throws into `emit()`; this hook
@@ -79,12 +114,21 @@ export interface RelayReEmitter {
  */
 class ReEmitGuard implements RelayReEmitter {
   readonly reEmitting = new WeakSet<object>();
-  constructor(readonly nodeId: string) {}
+  readonly #gate: RemoteChannelGate;
+  constructor(
+    readonly nodeId: string,
+    maxRemoteChannels: number = DEFAULT_MAX_REMOTE_CHANNELS,
+  ) {
+    this.#gate = createRemoteChannelGate(maxRemoteChannels);
+  }
 
   reEmit(envelope: DiagnosticsEventEnvelope): void {
+    if (envelope === null || typeof envelope !== 'object') return;
     if (envelope.node === this.nodeId) return; // our own echo
     const env = envelope.env;
-    if (!env || typeof env.lib !== 'string' || typeof env.event !== 'string') return;
+    if (env === null || typeof env !== 'object' || Array.isArray(env)) return;
+    // Only valid names, on a channel this process knows or one of a bounded number of new ones.
+    if (this.#gate.admit(env.lib, env.event) !== 'ok') return;
     this.reEmitting.add(env);
     try {
       publishRelayed(env, () => getChannel(env.lib, env.event).publish(env));
@@ -146,8 +190,12 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
   const nodeId = options.nodeId ?? randomUUID();
   const onDispatchError = options.onDispatchError;
 
-  const guard = new ReEmitGuard(nodeId);
+  const jobAuth =
+    options.jobAuth ?? createQueueJobAuth(options, queueRejectionHooks(options.onError));
+  const guard = new ReEmitGuard(nodeId, options.maxRemoteChannels);
   const unbindReEmitter = options.receive === false ? () => {} : bindRelayReEmitter(guard);
+  const unbindAuth = options.jobAuth ? () => {} : bindQueueJobAuth(jobAuth);
+  if (jobAuth.mode === 'insecure') warnInsecureQueue();
 
   const report = (err: unknown): void => {
     try {
@@ -169,18 +217,53 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
     }
   };
 
-  const batcher = createTurnBatcher<DiagnosticsEventEnvelope>((envelopes) => {
-    if (envelopes.length > 1 && typeof job.dispatchMany === 'function') {
-      fireAndReport(() => job.dispatchMany?.(envelopes));
+  const send = (payloads: DiagnosticsEventJobPayload[]): void => {
+    if (payloads.length === 0) return;
+    if (payloads.length > 1 && typeof job.dispatchMany === 'function') {
+      fireAndReport(() => job.dispatchMany?.(payloads));
       return;
     }
-    for (const envelope of envelopes) fireAndReport(() => job.dispatch(envelope));
+    for (const payload of payloads) fireAndReport(() => job.dispatch(payload));
+  };
+
+  // Sealing may wait for the crypto server (once an hour): turns keep their order behind it.
+  let tail: Promise<void> | null = null;
+  const batcher = createTurnBatcher<DiagnosticEvent>((envs) => {
+    const run = (): void | Promise<void> => {
+      let sealed: ReturnType<QueueJobAuth['seal']>;
+      try {
+        sealed = jobAuth.seal('event', nodeId, envs);
+      } catch (error) {
+        report(error);
+        return;
+      }
+      if (!isThenable<DiagnosticsEventJobPayload[]>(sealed)) {
+        send(sealed as DiagnosticsEventJobPayload[]);
+        return;
+      }
+      return Promise.resolve(sealed).then(
+        (payloads) => send(payloads as DiagnosticsEventJobPayload[]),
+        report,
+      );
+    };
+    if (tail) {
+      tail = tail.then(run);
+      return;
+    }
+    const pending = run();
+    if (pending) {
+      const current: Promise<void> = pending.then(() => {
+        if (tail === current) tail = null;
+      });
+      tail = current;
+    }
   });
 
   const forward = (msg: unknown): void => {
     if (typeof msg !== 'object' || msg === null) return;
-    if (guard.reEmitting.has(msg)) return; // a re-emitted remote event — do not send it back
-    batcher.push({ node: nodeId, env: msg as DiagnosticEvent });
+    // A re-emitted remote event (by this relay or any other in this process): never send it on.
+    if (guard.reEmitting.has(msg) || isRelayed(msg)) return;
+    batcher.push(msg as DiagnosticEvent);
   };
 
   const selector = createChannelSelector(options, forward);
@@ -189,5 +272,65 @@ export function createDiagnosticsQueueRelay(options: DiagnosticsQueueRelayOption
     batcher.flush();
     selector.stop();
     unbindReEmitter();
+    unbindAuth();
+  };
+}
+
+/** The code of the errors `onError` receives for refused jobs. */
+export const QUEUE_JOB_REJECTED = 'AGORA_DIAGNOSTICS_QUEUE_JOB_REJECTED';
+
+const QUEUE_REJECTION_MESSAGES: Record<string, string> = {
+  unsealed:
+    'refused a diagnostics queue job without authentication (dispatched by an older version, or written into the queue backend by someone else)',
+  unauthenticated:
+    'refused a diagnostics queue job that failed authentication (is every process configured with the same `secret` / `crypto` key?)',
+  stale:
+    'refused a diagnostics queue job older than maxJobAge (or more than a minute ahead: check clocks)',
+  replayed: 'refused a diagnostics queue job whose message another job already carried (a replay)',
+  malformed: 'refused a malformed diagnostics queue job',
+  'crypto-unavailable': 'the queue transport could not use its crypto key',
+};
+
+let warnedInsecureQueue = false;
+
+function warnInsecureQueue(): void {
+  if (warnedInsecureQueue) return;
+  warnedInsecureQueue = true;
+  try {
+    process.emitWarning(
+      '[@adonis-agora/diagnostics] the queue transport runs with `insecure: true`: anyone who can write jobs into the queue backend can inject diagnostics events and run listeners with input of their choosing. Set `secret` or `crypto` outside local development.',
+      { code: 'AGORA_DIAGNOSTICS_INSECURE_RELAY' },
+    );
+  } catch {
+    // a throwing warning listener must not break the relay
+  }
+}
+
+/** Reports refused jobs once per reason, to `onError` or as a process warning. */
+export function queueRejectionHooks(onError?: (error: Error) => void): {
+  onReject: (reason: string, kind: string) => void;
+  onError: (error: unknown) => void;
+} {
+  const reported = new Set<string>();
+  const report = (reason: string, cause?: unknown): void => {
+    if (reported.has(reason)) return;
+    reported.add(reason);
+    const error = Object.assign(
+      new Error(
+        `[@adonis-agora/diagnostics] ${QUEUE_REJECTION_MESSAGES[reason] ?? `refused a diagnostics queue job (${reason})`}`,
+        { cause },
+      ),
+      { code: QUEUE_JOB_REJECTED, reason },
+    );
+    try {
+      if (onError) onError(error);
+      else process.emitWarning(error.message, { code: QUEUE_JOB_REJECTED });
+    } catch {
+      // a throwing hook must not break the worker
+    }
+  };
+  return {
+    onReject: (reason) => report(reason),
+    onError: (cause) => report('crypto-unavailable', cause),
   };
 }

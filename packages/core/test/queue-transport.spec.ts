@@ -57,7 +57,7 @@ describe('transports.queue', () => {
   });
 
   it('pushes a turn of events with one dispatchMany onto the configured queue', async () => {
-    teardowns.push(await transports.queue({ queue: 'diagnostics' })(context()));
+    teardowns.push(await transports.queue({ queue: 'diagnostics', insecure: true })(context()));
 
     emit('resilience', 'circuit-opened', { n: 1 });
     emit('resilience', 'circuit-closed', { n: 2 });
@@ -73,7 +73,7 @@ describe('transports.queue', () => {
   });
 
   it('uses a plain dispatch for a single event', async () => {
-    teardowns.push(await transports.queue()(context()));
+    teardowns.push(await transports.queue({ insecure: true })(context()));
 
     emit('resilience', 'circuit-opened', { n: 1 });
     await nextTurn();
@@ -95,7 +95,9 @@ describe('transports.queue listener delivery', () => {
     ({ v: 1, id: `id-${n}`, ts: 0, lib: 'agent', event: 'run.finished', payload: { n } }) as const;
 
   it('dispatches one listener job per (listener, event) onto the configured queue', async () => {
-    const handle = (await transports.queue({ queue: 'diagnostics' })(context())) as TransportHandle;
+    const handle = (await transports.queue({ queue: 'diagnostics', insecure: true })(
+      context(),
+    )) as TransportHandle;
     started.push(handle);
 
     await handle.deliver?.([{ listenerId: 'track#handle', envelope: envelope(1) }]);
@@ -122,12 +124,14 @@ describe('transports.queue listener delivery', () => {
   });
 
   it('retries a listener job 3 times by default, or as configured', async () => {
-    started.push((await transports.queue()(context())) as TransportHandle);
+    started.push((await transports.queue({ insecure: true })(context())) as TransportHandle);
     expect(DiagnosticsListenerJob.options).toMatchObject({
       name: 'agora.diagnostics.listener',
       maxRetries: 3,
     });
-    started.push((await transports.queue({ retries: 7 })(context())) as TransportHandle);
+    started.push(
+      (await transports.queue({ retries: 7, insecure: true })(context())) as TransportHandle,
+    );
     expect(DiagnosticsListenerJob.options.maxRetries).toBe(7);
   });
 
@@ -136,6 +140,7 @@ describe('transports.queue listener delivery', () => {
       if (listenerId === 'failing#handle') throw new Error('boom');
     });
     bindListenerInvoker(invoke);
+    started.push((await transports.queue({ insecure: true })(context())) as TransportHandle);
 
     const ok = new DiagnosticsListenerJob();
     (ok as unknown as { payload: unknown }).payload = {

@@ -34,6 +34,7 @@ export default defineConfig({
   forward: { libs: ['resilience', 'durable'] }, // or { all: true }
 
   transports: {
+    // Authenticated with the app's APP_KEY, nothing to add. See "Authenticating the relays".
     redis: transports.redis({ connection: 'main' }),   // @adonisjs/redis + ioredis
     queue: transports.queue({ queue: 'diagnostics' }), // @adonisjs/queue
     durable: transports.durable({ retries: 5 }),        // @adonis-agora/durable
@@ -117,18 +118,141 @@ Two consequences:
 
 ## The Redis transport
 
-`transports.redis(config)` relays over [`@adonisjs/redis`](https://docs.adonisjs.com/guides/digging-deeper/redis) pub/sub. A forwarded event is published to a Redis channel; every other process subscribed to that channel re-emits it onto its local bus. Echoes are suppressed by `nodeId`, and a re-emit guard stops a re-emitted event from being forwarded back — so events never loop. The events of one turn go out as a single ioredis pipeline, one `{ node, env }` message per event. A payload that can't be serialized (a circular reference) drops only that event.
+`transports.redis(config)` relays over [`@adonisjs/redis`](https://docs.adonisjs.com/guides/digging-deeper/redis) pub/sub. A forwarded event is published to a Redis channel; every other process subscribed to that channel checks the message is authentic and re-emits it onto its local bus. Echoes are suppressed by `nodeId`, and a re-emit guard stops a re-emitted event from being forwarded back — so events never loop. The events of one turn go out as a single ioredis pipeline, one message per event. A payload that can't be serialized (a circular reference) drops only that event.
 
 ```ts
 transports.redis({
   connection: 'main',                 // @adonisjs/redis connection name (default: the default one)
   redisChannel: 'agora:diagnostics:relay', // Redis channel to relay on (this is the default)
+  // nothing to add: the app's APP_KEY authenticates it (across apps: secret or crypto)
+  maxRemoteChannels: 256,             // new channels other processes may create here (default 256)
 })
 ```
 
 Redis is a broadcast: [listeners](/docs/diagnostics/listeners) run in every process that receives the event, the emitting one included. The libs your listeners listen to are relayed on top of `forward`, so you don't have to list them twice. A listener that throws is logged and the event is dropped for it.
 
 A Redis client that is subscribed cannot also publish, so the transport needs two legs. The **publisher** is the raw ioredis client behind the named `@adonisjs/redis` connection — owned by `@adonisjs/redis`, and never closed here. The **subscriber** is a `duplicate()` of it, created and owned by the transport itself; `@adonisjs/redis` does not track it, so the transport closes it on teardown. Without that close, the open socket would keep the process alive and a graceful shutdown (or a test run) would hang.
+
+### Authenticating the relays
+
+Neither Redis nor a queue backend is a trust boundary. Whoever can publish on the relay channel, or write a job into the queue (another app on a shared Redis, a leaked password, an SSRF), could otherwise put events on every process's bus (fake events that Telescope, the dev tools, metrics and your listeners take as real, on channel names of their choosing) or, with the queue transport, run any of your listeners with input of their choosing. So every Redis message and every queue job is authenticated, and **a Redis or queue transport that cannot authenticate refuses to start**. Every process on the same `redisChannel` (or queue) uses the same mode.
+
+#### Same app: nothing to configure
+
+The relays carry events between the processes of **one app** (web, queue workers, schedulers), and those share the app's `APP_KEY`. So with nothing configured, both transports authenticate with a key derived from it, and `config/diagnostics.ts` has no auth line:
+
+```ts title="config/diagnostics.ts"
+transports: {
+  redis: transports.redis({ connection: 'main' }),
+  queue: transports.queue({ queue: 'diagnostics' }),
+},
+```
+
+- **Key:** an AES-256-GCM key derived from `APP_KEY` with HKDF-SHA256 (purpose `agora:diagnostics:relay`). Every message and job is encrypted and authenticated with it, bound to its channel: **nothing of an event is readable on Redis or in the queue backend**. No crypto server, no key to create, no grant.
+- **Where `APP_KEY` comes from:** `config/app.ts`'s `appKey`, else the default entry of `config/encryption.ts` (AdonisJS 7: the first key of `list[default]`, e.g. `drivers.legacy({ keys: [env.get('APP_KEY')] })`), else the `APP_KEY` environment variable. A string or a `Secret`. At least 16 characters. Every Agora lib reads it the same way.
+- **Boot:** the transport logs the mode it resolved, once: `[@adonis-agora/diagnostics] redis relay: app key (auto)` (or `queue jobs: app key (auto)`).
+- **Rotation:** the relay uses the current `APP_KEY` only; `APP_KEY_LEGACY` (the old keys AdonisJS keeps for decrypting data) is not used, since relay messages live a minute and queue jobs a day at most. Changing `APP_KEY` changes the relay key: during a rolling deploy, processes on the old and new key drop each other's messages until all run the new one, and jobs queued before the switch are refused by workers on the new key.
+- **`appKey` in `config/app.ts`:** a string or a `Secret` (`new Secret(env.get('APP_KEY'))`, what AdonisJS apps export) both work; the key is released only to derive the relay key and never logged or shown by `transportInfo` / the doctor.
+- **Off:** `crypto: false` turns the automatic mode off (then `secret`, `crypto` or `insecure` is required). Any explicit `secret`, `crypto` or `insecure` is used as given.
+
+**Across apps** (processes of different apps on one relay channel or queue, which don't share an `APP_KEY`): use a shared secret, or an explicit `@adonis-agora/crypto` key, below.
+
+#### Without authkit or crypto: a shared secret
+
+For relays across apps, or when you'd rather not use `APP_KEY`. Crypto is not required: a shared secret is a first-class mode. Generate a long random value once and give the same one to every process that relays (web, workers, other apps on the same `redisChannel` or queue):
+
+```sh title="terminal"
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+```ts title="config/diagnostics.ts"
+import env from '#start/env'
+
+redis: transports.redis({ connection: 'main', secret: env.get('DIAGNOSTICS_RELAY_SECRET') }),
+queue: transports.queue({ queue: 'diagnostics', secret: env.get('DIAGNOSTICS_RELAY_SECRET') }),
+```
+
+```ts title="start/env.ts"
+DIAGNOSTICS_RELAY_SECRET: Env.schema.secret(),
+```
+
+At least 16 characters. A `Secret` (what `env.get` returns for `Env.schema.secret()`) is accepted as is. Each message carries an HMAC-SHA256; the event itself stays readable on Redis and in the queue. The key is derived from the secret and the channel (the Redis channel; for the queue, the job kind), so the same secret on two channels doesn't let one feed the other, and an event job cannot be passed off as a listener job. To rotate, deploy the new secret to every process; during the rollout, processes on different secrets drop each other's messages.
+
+| | `APP_KEY` (automatic) | Shared secret | Explicit `@adonis-agora/crypto` |
+| --- | --- | --- | --- |
+| For | the processes of one app | any processes | any processes, across apps |
+| Config | none | `secret: env.get('DIAGNOSTICS_RELAY_SECRET')` in every process | `crypto: { cipher }` in every process |
+| Messages | encrypted (AES-256-GCM) | HMAC-SHA256; readable on Redis / in the queue | encrypted (AES-256-GCM) |
+| Secret to distribute by hand | none (the app's `APP_KEY`) | one, the same in every process | none |
+| Who may relay | whoever holds `APP_KEY` | whoever holds the secret | whoever may `encrypt` **and** `decrypt` with the key |
+| Rotation and audit | rotate `APP_KEY` | rotate the secret everywhere at once | crypto's (`crypto:keys:rotate`, the crypto audit) |
+
+#### Bring your own
+
+None of `@adonis-agora/authkit`, `@adonis-agora/authz` or `@adonis-agora/crypto` is required: the automatic mode only needs the app's own `APP_KEY`. Everything is a plain option:
+
+- **Your own shared secret**: `secret`, above. Nothing else to install.
+- **Your own crypto, KMS or HSM**: `crypto: { cipher, key?, owns? }`, below.
+- **No automatic mode**: `crypto: false` turns the `APP_KEY` mode off.
+
+Authorization (authz) does not apply to a relay: there is no viewer and no command, only processes of your deployment that hold the secret or the key.
+
+`crypto: { cipher, key?, owns? }` is never picked by itself, even with `@adonis-agora/crypto` booted. Use it for processes of several apps on one relay (every one of them with a cipher on the same partition and key, `console-diagnostics` by default: create it with `node ace crypto:keys:create console-diagnostics --type aes256-gcm --application <app>` and give every relaying client `crypto:encrypt` **and** `crypto:decrypt` on it), or for a cipher that is not `@adonis-agora/crypto` at all: anything with these two calls works (AWS KMS, Vault transit, an HSM wrapper).
+
+How crypto mode works: each process seals a random session key with the crypto key once an hour, and encrypts its messages with that session key locally; a receiver opens each sender's session key once and caches it. So the crypto server sees about one `encrypt` per process per hour and one `decrypt` per process per sender per hour, not a call per event. Unknown session keys are opened at most 30 times a minute, so junk on Redis cannot flood the crypto server.
+
+```ts title="config/diagnostics.ts"
+import crypto from '@adonis-agora/crypto/services/main'
+
+// The app's crypto client, with another key name. A function: config is read before crypto is ready.
+redis: transports.redis({ crypto: { cipher: () => crypto.client!, key: 'relay-shared' } }),
+```
+
+```ts title="config/diagnostics.ts (your own KMS)"
+const kms = {
+  encrypt: async ({ key, plaintext, aad }) => ({ ciphertext: await myKms.encrypt(key, plaintext, aad) }),
+  decrypt: async ({ key, ciphertext, aad }) => ({ plaintext: await myKms.decrypt(key, ciphertext, aad) }),
+}
+
+queue: transports.queue({
+  crypto: {
+    cipher: kms,
+    key: 'diagnostics',
+    // The default check expects @adonis-agora/crypto's `agora:ct1:<key>:` ciphertexts.
+    owns: (ciphertext) => ciphertext.startsWith('kms:'),
+  },
+}),
+```
+
+The ciphertext must be a single line. Every relaying process needs both `encrypt` and `decrypt` on the key (a `role: 'api'` process only sends; `encrypt` is enough there).
+
+**No authkit token mode.** The federated consoles of the other Agora libs can authenticate with authkit tokens, because there a console sends a command to one app that checks the token and answers. The relays are a broadcast: every process publishes, every process receives, nobody answers. A token would have to be verified by every receiver of every message and each process would need its own authkit client just to say "I am one of us"; `APP_KEY`, a shared secret or a crypto key says exactly that, at no cost per message. So authkit is not used here, even when it is installed.
+
+#### Freshness and replays
+
+On Redis, a message carries its sender, a unique id and a timestamp under the authentication: one over a minute old (or more than a minute ahead: keep clocks in sync) is dropped, and so is an id already seen, so a captured message cannot be replayed.
+
+A queue job waits in a backlog and is retried with the same payload, so it gets its own rules: a job is valid for `maxJobAgeMs` after it was dispatched (default 24 hours; set it on `transports.queue({ maxJobAgeMs })`), and its message is bound to the queue's **job id** the first time a worker opens it. The same job retried (same job id, any attempt) passes; the same message in another job (a copy written into the backend) is refused as a replay. The ids are remembered for the age window in each worker process.
+
+A dropped message or refused job is logged as a warning, once per reason per process (`AGORA_DIAGNOSTICS_RELAY_REJECTED` for Redis, `AGORA_DIAGNOSTICS_QUEUE_JOB_REJECTED` for jobs), never thrown. A refused listener job completes without running the listener and is not retried: retrying would not change the verdict.
+
+#### When nothing resolves: the boot error
+
+Without an `APP_KEY` and nothing configured (or with `crypto: false` and nothing else), the transport throws at boot, naming the options in order:
+
+```
+[@adonis-agora/diagnostics] the queue transport needs authentication. Set APP_KEY in this app (automatic for the processes of one app: nothing else to configure; `node ace generate:key`), or set `secret` (...), or `crypto: { cipher }` (@adonis-agora/crypto or your own KMS, for relays across apps). For local development only, `insecure: true` relays without authentication.
+```
+
+The check runs where the transport starts (the provider's `ready`, so a web server, a `queue:work` worker, any command that starts the app); ace commands that don't start the app are unaffected. `node ace agora:doctor` reports the resolved mode without booting (`diagnostics.relay-auth`: `app key (auto)`, `secret`, `crypto (key …)`, or the error). With an explicit `crypto`, its deep check `diagnostics.relay-auth-key` (`--deep`, with the app booted) probes the key: this process encrypts and decrypts with it. The `APP_KEY` mode has no key to probe.
+
+#### Local development: `insecure: true`
+
+`transports.redis({ insecure: true })` / `transports.queue({ insecure: true })` relay without authentication, the way earlier versions did, and warn at boot (`AGORA_DIAGNOSTICS_INSECURE_RELAY`). Use it only on a Redis or queue backend nothing else can reach; `node ace agora:doctor` flags it.
+
+### What a received event may create
+
+Every new `(lib, event)` pair a process sees becomes a channel it keeps for its lifetime, with subscriptions from the recent-events buffer, the relay and the OTel bridge. So even an authenticated relay only re-emits an event whose `lib` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and whose `event` matches `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`, on a channel this process already knows or one of at most `maxRemoteChannels` (default 256) new ones. Past that, events on channels this process has never seen are dropped with a warning; events on known channels keep flowing. The queue relay applies the same names and cap (`createDiagnosticsQueueRelay({ maxRemoteChannels })`). A relayed copy is never forwarded again, by any relay in the process.
 
 ## The queue transport
 
@@ -137,6 +261,8 @@ A Redis client that is subscribed cannot also publish, so the transport needs tw
 ```ts
 transports.queue({
   queue: 'diagnostics', // queue to dispatch onto — omit for the job's default queue
+  // nothing to add: the app's APP_KEY authenticates it (across apps: secret or crypto)
+  maxJobAgeMs: 24 * 60 * 60_000, // how long a job stays valid (backlog and retries); the default
 })
 ```
 
@@ -150,6 +276,8 @@ interface DiagnosticsEventEnvelope {
 ```
 
 `node` is what makes echo suppression work: a process ignores any envelope stamped with its own id. `env` is untouched — `ts`, `lib`, `event`, `traceId`, `payload` and `durationMs` arrive on the far side exactly as `emit` built them, so a remote `onDiagnostic` handler cannot tell the event came over the wire.
+
+That envelope is what the relay seals: on the queue it travels as `{ sealed }`, a message authenticated like a Redis relay message (encrypted with the `APP_KEY` mode and in crypto mode), and the worker re-emits it only once it opened. A job without a valid seal is refused. See [Authenticating the relays](#authenticating-the-relays). A worker still re-emits only valid `lib`/`event` names on a bounded number of new channels (see [What a received event may create](#what-a-received-event-may-create)).
 
 A worker must be running to receive forwarded events. `queue` is a **flag** on `queue:work`, not a positional argument — pass a bare name and the worker silently starts on the `default` queue instead, where the relay never dispatches anything:
 
@@ -170,7 +298,7 @@ transports.queue({
 })
 ```
 
-Delivery is at-least-once, so make listeners idempotent on `event.id`. The worker must run the same app and config, so it has the same listeners; start it on the transport's queue:
+Listener jobs are sealed the same way (`{ sealed }` carrying the listener id and the event), so nobody who can write into the queue backend can run a listener with input of their choosing. Delivery is at-least-once, so make listeners idempotent on `event.id`. The worker must run the same app and config, so it has the same listeners; start it on the transport's queue:
 
 ```sh title="terminal"
 node ace queue:work --queue=diagnostics
@@ -192,6 +320,7 @@ import { createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
 const stop = createDiagnosticsQueueRelay({
   job: DiagnosticsEventJob,
   all: true,
+  secret: env.get('DIAGNOSTICS_RELAY_SECRET'), // or crypto: { cipher }
   onDispatchError: (error) => {
     metrics.increment('diagnostics.relay.dispatch_failed')
     logger.error({ err: error }, 'diagnostics relay could not reach the queue')
@@ -252,6 +381,8 @@ unbind()
 ```
 
 What you really bind is the `nodeId`: envelopes stamped with it are dropped as this process's own echo, and every other envelope is published onto the local bus under its original `lib`/`event`, so `onDiagnostic('billing', …)` here fires for an event emitted in the web process. Binding is last-write-wins — a later call replaces the current re-emitter, and the returned unbind clears it only if it is still the active one.
+
+The job also needs the job authentication to open its payload, which starting the transport binds (`bindQueueJobAuth(createQueueJobAuth({ secret }))` does it by hand). With a re-emitter but no job authentication, the job is a no-op.
 
 <Callout type="warn" title="A queue is fan-out, not request/response">
 The relay only dispatches; it never waits. That fits diagnostics (you want events to spread, not to block the emitter). Pick the queue transport when a queue is already your cross-process backbone; pick Redis when you want a dedicated low-latency pub/sub path.
@@ -483,7 +614,14 @@ The transport factories wrap two framework-agnostic functions, exported for non-
 ```ts
 import { createDiagnosticsRedisRelay, createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
 
-const stop = createDiagnosticsRedisRelay({ pub, sub, libs: ['resilience'], nodeId: 'A' })
+const stop = createDiagnosticsRedisRelay({
+  pub,
+  sub,
+  libs: ['resilience'],
+  nodeId: 'A',
+  secret: process.env.DIAGNOSTICS_RELAY_SECRET, // or crypto: { cipher }, or insecure: true
+})
+// (Outside AdonisJS there is no automatic mode: pass `appKey`, `secret`, `crypto` or `insecure`.)
 // …later
 stop()
 ```
@@ -500,6 +638,12 @@ stop()
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
 | `redisChannel` | `string` | `agora:diagnostics:relay` | The Redis channel to relay on. Every process that should see each other's events must agree on it. |
 | `nodeId` | `string` | random | Id stamped on outgoing messages; incoming messages carrying it are dropped as this process's own echo. |
+| `secret` | `string \| { release(): string }` | — | Shared secret (16+ characters) every relaying process holds. One of `appKey`, `secret`, `crypto`, `insecure` is required here (the automatic `APP_KEY` mode is a `transports.redis()` feature). See [Authenticating the relays](#authenticating-the-relays). |
+| `appKey` | `string \| { release(): string }` | — | The app's `APP_KEY` (16+ characters): what the AdonisJS transports use automatically. |
+| `crypto` | `{ cipher: RelayCipher \| () => RelayCipher, key?: string, owns?: (ciphertext) => boolean }` | — | Authenticate and encrypt with an `@adonis-agora/crypto` key (default `console-diagnostics`), or your own KMS. |
+| `insecure` | `boolean` | `false` | Relay without authentication. Local development only; warns. |
+| `maxRemoteChannels` | `number` | `256` | How many channels received events may create beyond those this process registered. |
+| `onError` | `(error: Error) => void` | process warning | Called once per reason when a received message is dropped (`error.reason`: `unauthenticated`, `stale`, `replayed`, `malformed`, `invalid-channel`, `channel-cap`, `overloaded`) or the crypto cipher fails (`crypto-unavailable`). `transports.redis` logs it as a warning. |
 
 Neither connection is closed by `stop()` — the relay only flushes, unsubscribes and detaches its message listener, because it opened neither. Closing is the caller's job, which is exactly what the `transports.redis` factory does for the `duplicate()` it created.
 
@@ -526,6 +670,10 @@ interface RedisLike {
 | `all` | `boolean` | `false` | Forward every `agora:` channel. Overrides `libs`/`channels`. |
 | `nodeId` | `string` | random | Id stamped onto every dispatched envelope; envelopes carrying it are dropped as this process's own echo. |
 | `receive` | `boolean` | `true` | `false` forwards only and binds no re-emitter. What `transports.queue` does on a `role: 'api'` process. |
+| `maxRemoteChannels` | `number` | `256` | How many channels received events may create beyond those this process registered. Events with an invalid `lib`/`event` name are dropped. |
+| `appKey` / `secret` / `crypto` / `insecure` | as for the Redis relay | — | How jobs are sealed and opened. One is required. |
+| `maxJobAgeMs` | `number` | 24 hours | How long a dispatched job stays valid (backlog and retries included). |
+| `onError` | `(error: Error) => void` | process warning | Called once per reason when a job a worker runs here is refused (`error.reason`: `unsealed`, `unauthenticated`, `stale`, `replayed`, `malformed`) or the crypto cipher fails. |
 | `onDispatchError` | `(error: unknown) => void` | ignored | Called when `dispatch` or `dispatchMany` throws or rejects, once per failed call. See [When dispatching fails](#when-dispatching-fails). |
 
 `job` is structural too — anything whose `dispatch(payload)` returns a promise (or nothing) satisfies it, which is what makes the relay testable without a queue backend. `dispatchMany` is optional; the `@adonisjs/queue` job class has it. Without it, every event in a turn gets its own `dispatch`:

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { ApplicationService } from '@adonisjs/core/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeHub, FakeRedis } from './fake-redis.js';
+import { bodyOf, signed, TEST_RELAY_SECRET } from './relay-wire.js';
 
 /** `@adonisjs/redis`: one hub per test, the app's connection is a FakeRedis that counts duplicates. */
 const redis = vi.hoisted(() => ({ pub: null as unknown, duplicates: 0 }));
@@ -14,22 +15,18 @@ const queue = vi.hoisted(() => {
   const calls: Array<{ job: string; payload: unknown }> = [];
   const pending = (): Promise<void> & { toQueue(): unknown } =>
     Object.assign(Promise.resolve(), { toQueue: () => pending() });
-  const record = (payload: unknown) =>
-    calls.push({
-      job:
-        typeof payload === 'object' && payload !== null && 'listenerId' in payload
-          ? 'agora.diagnostics.listener'
-          : 'agora.diagnostics.event',
-      payload,
-    });
+  const record = (job: string | undefined, payload: unknown) =>
+    calls.push({ job: job ?? 'unnamed', payload });
   class Job {
     static options: { name?: string } = {};
     static dispatch(payload: unknown) {
-      record(payload);
+      // biome-ignore lint/complexity/noThisInStatic: the subclass's options name the job
+      record(this.options?.name, payload);
       return pending();
     }
     static dispatchMany(payloads: unknown[]) {
-      for (const payload of payloads) record(payload);
+      // biome-ignore lint/complexity/noThisInStatic: the subclass's options name the job
+      for (const payload of payloads) record(this.options?.name, payload);
       return pending();
     }
   }
@@ -92,7 +89,7 @@ async function boot(config: DiagnosticsConfig) {
 /** A message another process put on the Redis relay channel. */
 function fromOtherProcess(hub: FakeHub, payload: unknown) {
   const env = { v: 1, id: 'remote-1', ts: 0, lib: 'agent', event: 'run.finished', payload };
-  new FakeRedis(hub).publish(RELAY, JSON.stringify({ node: 'other', env }));
+  new FakeRedis(hub).publish(RELAY, signed('other', env));
 }
 
 function fakeDurable() {
@@ -157,14 +154,16 @@ describe('role × redis', () => {
     const seen: unknown[] = [];
     const spy = new FakeRedis(hub);
     spy.subscribe(RELAY);
-    spy.on('message', (_channel, message) => seen.push(JSON.parse(message).env.payload));
+    spy.on('message', (_channel, message) =>
+      seen.push(bodyOf<{ env: { payload: unknown } }>(message).env.payload),
+    );
     return { hub, seen };
   };
   const config = (role: 'all' | 'api' | 'worker'): DiagnosticsConfig => ({
     role,
     default: 'redis',
     nodeId: 'self',
-    transports: { redis: transports.redis() },
+    transports: { redis: transports.redis({ secret: TEST_RELAY_SECRET }) },
   });
 
   it("'api' publishes (listener libs included), opens no subscriber, runs no listener", async () => {
@@ -215,7 +214,7 @@ describe('role × queue', () => {
     default: 'queue',
     nodeId: 'self',
     forward: { libs: ['agent'] },
-    transports: { queue: transports.queue() },
+    transports: { queue: transports.queue({ secret: TEST_RELAY_SECRET }) },
   });
   const job = (payload: unknown) =>
     Object.assign(new DiagnosticsListenerJob(), { payload }) as DiagnosticsListenerJob;
@@ -295,19 +294,27 @@ describe('receive-less relays', () => {
   it('createDiagnosticsRedisRelay({ receive: false }) needs no sub and only publishes', async () => {
     const hub = new FakeHub();
     const pub = new FakeRedis(hub);
-    const stop = createDiagnosticsRedisRelay({ pub, receive: false, libs: ['agent'] });
+    const stop = createDiagnosticsRedisRelay({
+      pub,
+      receive: false,
+      libs: ['agent'],
+      secret: TEST_RELAY_SECRET,
+    });
     emit('agent', 'run.finished', {});
     await nextTurn();
     expect(pub.publishCount).toBe(1);
     stop();
+    const noSub = { pub, libs: ['agent'], secret: TEST_RELAY_SECRET };
     // @ts-expect-error a relay that receives needs a `sub`
-    expect(() => createDiagnosticsRedisRelay({ pub, libs: ['agent'] })).toThrow(
-      '`sub` is required',
-    );
+    expect(() => createDiagnosticsRedisRelay(noSub)).toThrow('`sub` is required');
   });
 
   it('createDiagnosticsQueueRelay({ receive: false }) binds no re-emitter', () => {
-    const stop = createDiagnosticsQueueRelay({ job: { dispatch: () => {} }, receive: false });
+    const stop = createDiagnosticsQueueRelay({
+      job: { dispatch: () => {} },
+      receive: false,
+      insecure: true,
+    });
     expect(getActiveReEmitter()).toBeNull();
     stop();
   });

@@ -94,6 +94,8 @@ import { defineConfig, transports } from '@adonis-agora/diagnostics'
 export default defineConfig({
   default: 'durable',
   transports: {
+    // Authenticated with the app's APP_KEY (across apps: `secret` or `crypto`):
+    // see /docs/diagnostics/transports#authenticating-the-relays
     redis: transports.redis({ connection: 'main' }),
     queue: transports.queue({ queue: 'diagnostics', retries: 5 }),
     durable: transports.durable({ retries: 5 }),

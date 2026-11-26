@@ -260,8 +260,17 @@ describe('diagnostics dev tools', () => {
   it('transportInfo identifies the built-in transports', () => {
     expect(transportInfo(transports.redis({ connection: 'main' }))).toEqual({
       kind: 'redis',
-      options: { connection: 'main' },
+      options: { connection: 'main', auth: 'auto' },
     });
+    expect(transportInfo(transports.redis({ crypto: false }))?.options).toEqual({ auth: 'none' });
+    expect(transportInfo(transports.queue({ queue: 'q' }))?.options).toEqual({
+      queue: 'q',
+      auth: 'auto',
+    });
+    // The relay secret never leaves through transportInfo (dev tools, doctor): only the mode.
+    expect(
+      transportInfo(transports.redis({ connection: 'main', secret: 'a-shared-relay-secret' })),
+    ).toEqual({ kind: 'redis', options: { connection: 'main', auth: 'secret' } });
     expect(transportInfo(transports.durable())?.kind).toBe('durable');
     expect(transportInfo(async () => () => {})).toBeUndefined();
   });

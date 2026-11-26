@@ -93,20 +93,42 @@ export {
   traceChannelNames,
   tracingChannel,
 } from './trace.js';
-export { type TransportInfo, type TransportKind, transportInfo } from './transports/factory.js';
+export {
+  type RedisRelayAuthMode,
+  type TransportInfo,
+  type TransportKind,
+  transportInfo,
+} from './transports/factory.js';
 export {
   bindRelayReEmitter,
   createDiagnosticsQueueRelay,
   type DiagnosticsEventEnvelope,
   type DiagnosticsEventJobLike,
+  type DiagnosticsEventJobPayload,
   type DiagnosticsQueueRelayOptions,
   getActiveReEmitter,
+  QUEUE_JOB_REJECTED,
   type RelayReEmitter,
 } from './transports/queue.js';
 export {
+  createQueueJobAuth,
+  DEFAULT_MAX_JOB_AGE_MS,
+  type DiagnosticsJobKind,
+  type QueueJobAuth,
+  type QueueJobAuthOptions,
+  type SealedJobPayload,
+} from './transports/queue_auth.js';
+export {
   createDiagnosticsRedisRelay,
   type DiagnosticsRedisRelayOptions,
+  RELAY_CRYPTO_KEY,
+  RELAY_REJECTED,
   type RedisLike,
+  type RelayAuthOptions,
+  type RelayCipher,
+  type RelayCipherSource,
+  type RelayCryptoOptions,
+  type RelaySecret,
 } from './transports/redis.js';
 export type {
   ChannelRegistry,

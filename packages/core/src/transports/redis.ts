@@ -26,7 +26,11 @@ export interface RedisLike {
   publish(channel: string, message: string): unknown;
   /** When present, a turn's forwarded events go out as one pipeline instead of one round trip each. */
   pipeline?(): RedisPipelineLike;
-  subscribe(channel: string, callback?: (err: Error | null, count: number) => void): unknown;
+  /**
+   * One channel, no callback: ioredis 6 types `subscribe` as variadic channels followed by a
+   * required callback (or none), which a single optional-callback signature does not match.
+   */
+  subscribe(channel: string): unknown;
   on(event: 'message', listener: (channel: string, message: string) => void): unknown;
   removeListener(event: 'message', listener: (channel: string, message: string) => void): unknown;
   unsubscribe(channel: string): unknown;

@@ -142,6 +142,7 @@ nowhere in this process.
 
 ```ts
 import { getActiveReEmitter } from '@adonis-agora/diagnostics'
+import logger from '@adonisjs/core/services/logger'
 
 if (getActiveReEmitter() === null) {
   logger.warn('diagnostics: no re-emitter bound — relayed events are dropped here')
@@ -160,9 +161,11 @@ testable without a queue backend.
 
 ```ts
 import { createDiagnosticsQueueRelay } from '@adonis-agora/diagnostics'
+import logger from '@adonisjs/core/services/logger'
+import RelayDiagnosticsJob from '#jobs/relay_diagnostics_job' // your @adonisjs/queue job
 
 const stop = createDiagnosticsQueueRelay({
-  job: { dispatch: (payload) => queue.dispatch(payload) }, // your @adonisjs/queue job
+  job: { dispatch: (payload) => RelayDiagnosticsJob.dispatch(payload) },
   all: true,
   nodeId: 'web-1',
   onDispatchError: (error) => logger.error({ err: error }, 'relay could not reach the queue'),
@@ -195,6 +198,9 @@ transport, binds no re-emitter, and every relayed event is silently dropped ther
 the job even reports success.
 
 ```ts
+import env from '#start/env'
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
 // Wrong — worker build leaves default unset, so no transport starts at all
 export default defineConfig({
   ...(env.get('DIAGNOSTICS_FORWARD', false)
@@ -205,6 +211,9 @@ export default defineConfig({
 ```
 
 ```ts
+import env from '#start/env'
+import { defineConfig, transports } from '@adonis-agora/diagnostics'
+
 // Correct — always select the transport; vary only what gets forwarded
 export default defineConfig({
   default: 'queue',
@@ -265,15 +274,21 @@ event loop turn (single Redis pipeline / single `dispatchMany`), so a slow backe
 longer slows the emitter and nothing throws into `emit()`.
 
 ```ts
+declare const nc: { publish(subject: string, data: string): void } // your NATS client
+
 // Wrong — unguarded publish propagates into the emitter
-const forward = (msg: unknown) => nc.publish(SUBJECT, encode(msg))
+const forward = (msg: unknown) => nc.publish('agora.diagnostics', JSON.stringify(msg))
 ```
 
 ```ts
+import logger from '@adonisjs/core/services/logger'
+
+declare const nc: { publish(subject: string, data: string): void } // your NATS client
+
 // Correct — catch everything, keep the send non-blocking
 const forward = (msg: unknown) => {
   try {
-    nc.publish(SUBJECT, encode(msg))
+    nc.publish('agora.diagnostics', JSON.stringify(msg))
   } catch (err) {
     logger.error({ err }, 'diagnostics: NATS publish failed')
   }
@@ -296,6 +311,8 @@ recorded as span *events* on the active span — with no active span they are dr
 not stored.
 
 ```ts
+import { start } from '@adonis-agora/diagnostics/otel'
+
 // Wrong — debugging with both feeds but seeing only the typed one
 start()
 
@@ -304,6 +321,11 @@ start({ recordClaimed: true })
 ```
 
 ```ts
+import { emit, trace } from '@adonis-agora/diagnostics'
+
+declare function charge(): Promise<void> // your billing code
+const payload = { invoiceId: 'inv_123', amount: 4200 }
+
 // Wrong — expecting background POINT emits to appear in the trace tree
 emit('billing', 'invoice-paid', payload) // no active span → dropped
 
@@ -324,6 +346,10 @@ by hand, neither connection is closed by `stop()` — leaving sockets open hangs
 and test runs.
 
 ```ts
+import { createDiagnosticsRedisRelay, type RedisLike } from '@adonis-agora/diagnostics'
+
+declare const pub: RedisLike & { duplicate(): RedisLike } // your publisher connection
+
 // Wrong — hand-rolled relay leaks the duplicate() socket
 const sub = pub.duplicate()
 createDiagnosticsRedisRelay({ pub, sub, libs: ['resilience'] })

@@ -12,3 +12,10 @@ allowBuilds:
 # Every other peer of @adonis-agora/diagnostics is also a devDependency, so this only stops pnpm
 # from installing the optional `@adonis-agora/durable` peer, which the tests replace with a fake.
 autoInstallPeers: false
+
+# Intent (`intent validate`) typechecks the skill examples from the repo root, so hoist the
+# packages they import (devDependencies of packages/core) to the root node_modules: the examples
+# load `@adonisjs/core` services against the same copy the library uses.
+# Install-time only: no published package changes.
+publicHoistPattern:
+  - "@adonisjs/core"

@@ -123,7 +123,7 @@ Source: `docs/transports.mdx` § Worker-only processes
 
 ### 1b. Split deployment: set `role` per process
 
-```ts
+```ts no-check
 // config/diagnostics.ts — DIAGNOSTICS_ROLE is 'api' on web pods, 'worker' on workers
 role: env.get('DIAGNOSTICS_ROLE', 'all'),
 ```
@@ -202,7 +202,9 @@ export default defineConfig({
     : {}),
   transports: { queue: transports.queue({ queue: 'diagnostics' }) },
 })
+```
 
+```ts
 // Correct — always select the transport; vary only what gets forwarded
 export default defineConfig({
   default: 'queue',
@@ -225,7 +227,7 @@ another on `crypto` silently drop each other's messages with a
 "fix" it with `insecure: true` outside local development: anyone who can publish on Redis
 or write jobs could then inject events and run listeners.
 
-```ts
+```ts no-check
 // Same app: nothing to add, the APP_KEY authenticates it
 redis: transports.redis({ connection: 'main' }),
 
@@ -265,7 +267,9 @@ longer slows the emitter and nothing throws into `emit()`.
 ```ts
 // Wrong — unguarded publish propagates into the emitter
 const forward = (msg: unknown) => nc.publish(SUBJECT, encode(msg))
+```
 
+```ts
 // Correct — catch everything, keep the send non-blocking
 const forward = (msg: unknown) => {
   try {

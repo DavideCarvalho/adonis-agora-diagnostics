@@ -1,5 +1,11 @@
 # @adonis-agora/diagnostics
 
+## 1.0.1
+
+### Patch Changes
+
+- [#179](https://github.com/DavideCarvalho/adonis-agora-diagnostics/pull/179) [`a25f78b`](https://github.com/DavideCarvalho/adonis-agora-diagnostics/commit/a25f78b8b3638637b8ce273e418ec84df5fada2a) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - An ioredis 6 client is assignable to `RedisLike` again (ioredis 5 still is): `subscribe` is typed with one channel and no callback, which both versions' variadic signatures satisfy.
+
 ## 1.0.0
 
 ### Major Changes

@@ -125,8 +125,13 @@ provider soft-registers the accessor at boot. An explicit `opts.traceId` wins.
 
 ```ts
 import { emit, getContextAccessor, resolveTraceId } from '@adonis-agora/diagnostics'
+import type { HttpContext } from '@adonisjs/core/http'
 
-emit('billing', 'invoice-paid', payload, { traceId: ctx.request.id() }) // explicit wins
+export async function store({ request }: HttpContext) {
+  const payload = { invoiceId: 'inv_123', amount: 4200 }
+  emit('billing', 'invoice-paid', payload, { traceId: request.id() }) // explicit wins
+}
+
 resolveTraceId()       // current id or undefined — never throws
 getContextAccessor()   // registered accessor, or null when unset
 ```
@@ -143,6 +148,8 @@ have to be able to emit an undeclared channel. The library's `LibOf`/`EventOf` a
 assignable; replacing them with bare `keyof ChannelRegistry` breaks every untyped call.
 
 ```ts
+import type { ChannelRegistry } from '@adonis-agora/diagnostics'
+
 // Wrong — closes the union; emitting an undeclared channel no longer compiles
 function myEmit(lib: keyof ChannelRegistry, event: keyof ChannelRegistry[typeof lib]) {}
 ```
@@ -165,6 +172,10 @@ allocates nothing. An observer that switches on "registered" payload shapes gets
 whatever the producer actually sent.
 
 ```ts
+import { onDiagnostic } from '@adonis-agora/diagnostics'
+
+declare function charge(amount: number): Promise<void> // your billing code
+
 // Wrong — assuming emitted data was validated because the type exists
 onDiagnostic('billing', 'invoice-paid', (e) => charge(e.payload.amount))
 
@@ -186,6 +197,9 @@ and each release decrements exactly the keys its own call added. One consumer
 releasing does not un-claim while another still holds the key.
 
 ```ts
+import { claimDiagnostics, isDiagnosticClaimed } from '@adonis-agora/diagnostics'
+import { start } from '@adonis-agora/diagnostics/otel'
+
 // Wrong — expecting A's release to re-enable generic bridging while B holds a claim
 const releaseA = claimDiagnostics('media', ['upload.complete'])
 claimDiagnostics('media', ['upload.complete'])

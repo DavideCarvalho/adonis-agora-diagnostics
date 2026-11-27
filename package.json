@@ -28,6 +28,7 @@
     "check:agora-doctor": "node scripts/check-agora-doctor.mjs packages/core"
   },
   "devDependencies": {
+    "@adonis-agora/context": "0.7.1",
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.6.9",
     "@changesets/changelog-github": "1.0.1",

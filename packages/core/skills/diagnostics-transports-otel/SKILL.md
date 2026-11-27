@@ -16,7 +16,7 @@ description: >
 metadata:
   type: core
   library: "@adonis-agora/diagnostics"
-  library_version: "0.2.6"
+  library_version: "1.0.0"
   framework: adonisjs
 sources:
   - "DavideCarvalho/adonis-diagnostics:docs/transports.mdx"

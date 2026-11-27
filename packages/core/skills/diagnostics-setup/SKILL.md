@@ -146,7 +146,9 @@ import { emit, onDiagnostic } from '@adonis-agora/diagnostics'
 import type { DiagnosticEvent } from '@adonis-agora/diagnostics'
 
 const seen: DiagnosticEvent[] = []
-const off = onDiagnostic('authz', 'decision', (e) => seen.push(e))
+const off = onDiagnostic('authz', 'decision', (e) => {
+  seen.push(e)
+})
 
 emit('authz', 'decision', { allowed: false })
 

@@ -13,6 +13,7 @@
     "mcp-tools",
     "cli",
     "doctor",
+    "agent-skills",
     "migrating-to-1-0",
     "---Integrations---",
     "opentelemetry",

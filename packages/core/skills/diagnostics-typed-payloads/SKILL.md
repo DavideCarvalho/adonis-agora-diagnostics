@@ -145,7 +145,9 @@ assignable; replacing them with bare `keyof ChannelRegistry` breaks every untype
 ```ts
 // Wrong — closes the union; emitting an undeclared channel no longer compiles
 function myEmit(lib: keyof ChannelRegistry, event: keyof ChannelRegistry[typeof lib]) {}
+```
 
+```ts
 // Correct — mirror the library's loose form (or just call emit directly)
 import type { EventOf, LibOf } from '@adonis-agora/diagnostics'
 function myEmit<TLib extends LibOf, TEvent extends EventOf<TLib>>(lib: TLib, event: TEvent) {}

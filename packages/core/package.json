@@ -67,6 +67,9 @@
     "**/trace.js",
     "**/trace.ts"
   ],
+  "publishConfig": {
+    "tag": "v0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run copy:stubs",
     "copy:stubs": "mkdir -p dist/stubs/start dist/stubs/config && cp stubs/start/diagnostics.stub dist/stubs/start/diagnostics.stub && cp stubs/config/diagnostics.stub dist/stubs/config/diagnostics.stub",

@@ -3,8 +3,8 @@ name: diagnostics-transports-otel
 description: >
   Cross-process fan-out and OpenTelemetry export for @adonis-agora/diagnostics.
   Covers defineConfig keys (otel, default, role, forward, nodeId, transports), the
-  transports.redis/transports.queue factories with lazy peer imports
-  (@adonisjs/redis + ioredis, @adonisjs/queue), forward ChannelSelection
+  transports.redis/transports.queue/transports.durable factories with lazy peer
+  imports (@adonisjs/redis + ioredis, @adonisjs/queue, @adonis-agora/durable), forward ChannelSelection
   (libs/channels/all), node ace queue:work --queue= flag, worker-only processes,
   getActiveReEmitter/bindRelayReEmitter, Redis relay and queue job authentication (automatic
   APP_KEY, secret, explicit crypto or KMS, insecure) and maxRemoteChannels, custom TransportProvider thunks with
@@ -61,9 +61,14 @@ export default defineConfig({
     // secret: env.get('DIAGNOSTICS_RELAY_SECRET') (same in every process) or crypto.
     redis: transports.redis({ connection: 'main' }),
     queue: transports.queue({ queue: 'diagnostics' }),
+    // Listeners as durable runs (needs @adonis-agora/durable installed and configured).
+    durable: transports.durable({ retries: 5 }),
   },
 })
 ```
+
+Listing a transport costs nothing: its peer dependency is imported only when it is the selected
+`default`, so a config can list all three and pick one per environment.
 
 The Redis relay authenticates every message, and the queue transport every job (event
 and listener jobs, sealed as `{ sealed }`). With nothing configured, both use an
